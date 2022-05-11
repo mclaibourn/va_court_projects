@@ -1,0 +1,495 @@
+---
+title: "Final Presentation"
+author: "Morgan, Ashley, Kevin"
+date: '2022-05-04'
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(janitor)
+library(kableExtra)
+library(RColorBrewer)
+```
+
+```{r alldata, include=FALSE}
+
+cc_allassault_2010_2020 <- readRDS("../data/cc_allassault_2010_2020.RDS")
+
+# recoding race variable
+cc_allassault_2010_2020 <- cc_allassault_2010_2020 %>%
+  filter(Race!="Unknown" & Race!="Other (Includes Not Applicable, Unknown)" & Race!=".") %>% 
+  mutate(minoritized = ifelse(Race == "White" | Race == "White Caucasian (Non-Hispanic)", 0, 1)) 
+
+# limiting analysis to subcode 57, simple assault/assault and battery
+cc_allassault_2010_2020 <- cc_allassault_2010_2020 %>% 
+  separate(CodeSection, into = c("code", "subcode"), sep = "-", remove = FALSE) %>% 
+  filter(str_detect(subcode, "57"))
+
+# Identifying assault cases with mandatory minimums
+cc_allassault_2010_2020 <- cc_allassault_2010_2020 %>% 
+  mutate(mand_min = ifelse(str_detect(Charge, "FIREARM|FIRE|ARM|HEALTH|TEACH|SCHL|SCHOOL|PRINC|PRINCIPAL|LEA|LAW|OFFICER"),1,0))
+
+```
+
+```{r sentencing_data, include=FALSE}
+
+cc_assault_2010_2020 <- readRDS("/cloud/project/data/cc_assault_2010_2020.RDS")
+
+# recoding race variable
+table(cc_assault_2010_2020$Race)
+cc_assault_2010_2020 <- cc_assault_2010_2020 %>%
+  filter(Race!="Unknown" & Race!="Other (Includes Not Applicable, Unknown)" & Race!=".") %>% 
+  mutate(minoritized = ifelse(Race == "White" | Race == "White Caucasian (Non-Hispanic)", 0, 1)) 
+
+# limiting analysis to subcode 57, simple assault/assault and battery
+cc_assault_2010_2020 <- cc_assault_2010_2020 %>% 
+  separate(CodeSection, into = c("code", "subcode"), sep = "-", remove = FALSE) %>% 
+  filter(str_detect(subcode, "57"))
+
+# Identifying assault cases with mandatory minimums
+cc_assault_2010_2020 <- cc_assault_2010_2020 %>% 
+  mutate(mand_min = ifelse(str_detect(Charge, "FIREARM|FIRE|ARM|HEALTH|TEACH|SCHL|SCHOOL|PRINC|PRINCIPAL|LEA|LAW|OFFICER"),1,0))
+cc_assault_2010_2020$mand_min <- factor(cc_assault_2010_2020$mand_min)
+```
+
+# Introduction
+
+### Mandatory Minimums
+
+A mandatory minimum is **"a minimum punishment that must be imposed by a court when a person is convicted of a specific offense."** [^1]
+
+```{r pie}
+slices <- c(162, 64)
+pct <- c((162/224)*100, (64/224)*100)
+pct <- round(pct)
+labels <- c("Felonies", "Misdemeanors")
+labels <- paste(labels, pct)
+labels <- paste(labels,"%",sep="")
+pie(slices, labels = labels, main = "Mandatory Minimum Offenses in VA")
+```
+
+### Rationales
+```{r rationale}
+
+tab <- matrix(c("Deterrence", "Uniformity", "Incapacitation", "Cooperation", "Ineffective", "Inequity", "Manipulation", "Trial Tax"), ncol=2, nrow = 4)
+colnames(tab) <- c('Proponents','Opponents')
+rownames(tab) <- c('1','2','3','4')
+tab <- as.table(tab)
+
+kbl(tab) %>% 
+   kable_styling(bootstrap_options = c("striped")) %>% 
+  column_spec(1, color = "green"
+              ) %>% 
+  column_spec(2, color = "red"
+              )
+```
+
+### Literature Findings
+
+1. Minoritized groups systemtically receive disproportionately high sentences
+
+2. At least some of this disparity can be explained by prosecutors charging minoritized people with mandatory minimums at a rate higher than white people
+
+3. In the court system, judicial discretion may generally **reduce** racial disparity caused by prosecutorial decision-making [^2]
+
+
+## Research Questions
+Based on what we found in the literature and the current conversation in Virginia about abolishing mandatory minimums because of their disparate racial effects, we were interested in looking at:   
+1. If there is a racial disparity in assault charges   
+2. If there is a racial disparity in guilty verdicts   
+3. If there is a racial disparity in sentencing  
+
+For each of these, we are interested in whether or not there is evidence that mandatory minimums exacerbate those disparities.   
+
+# Data and Variable Definition    
+* We have ten years of data at the state level.\
+* We limited our data to just look at assault charges.\
+* Simple assault has no mandatory minimum charge, while assault against law enforcement officers, school principals/teachers, fire/EMT, public service officers, or with a firearm is subject to a mandatory minimum sentence of 180 days.\
+* We generated a variable to indicate whether a defendant was charged with a crime that had a mandatory minimum sentence. We were concerned at first that 104 mandatory minimum charges had sentence times below 180 days. Upon further investigation, however, we found that 101 of those charges had been amended.\
+
+Number of mandatory minimum charges with sentences below 180 days:
+```{r Investigating Amended Charges, message=FALSE}
+cc_assault_2010_2020 %>% filter(mand_min==1 & SentenceTime < 180) %>% count()
+cc_assault_2010_2020 <- cc_assault_2010_2020 %>% 
+  mutate(charge_amended = ifelse(AmendedCharge=="NA",0,1))
+cc_assault_2010_2020 %>% 
+  filter(SentenceTime!="NA") %>% 
+  filter(mand_min==1 & SentenceTime < 180) %>% 
+  mutate(ncases = n()) %>% 
+  filter(charge_amended==1) %>% 
+  summarize(n_cases = ncases,
+            n_amended = n(),
+            pct_amended = n_amended/n_cases)
+```
+
+* We decided to code the race variable as a binary variable indicating whether the defendant is from a minoritized group or not. We defined white, non-hispanic individuals as non-minoritized, and all other categorizations as minoritized.\
+
+## Number of Cases from 2010-2020
+```{r proportion over time, message=FALSE, warning=FALSE}
+library (stringr)
+
+#Both of these charges have followed the same relative trend over the last decade.
+
+cc_allassaultsovertime <- cc_allassault_2010_2020
+cc_allassaultsovertime %>%
+  mutate(minoritized2 = recode(minoritized, 
+                               "1" = "Minoritized",
+                               "0" = "Non-Minoritized")) %>% 
+  mutate(mand_min2 = recode(mand_min,
+                            "1" = "Mandatory Minimum",
+                            "0" = "No Mandatory Minimum")) %>%
+  ggplot(aes(Filed)) + 
+  geom_freqpoly(binwidths = 7) +
+  facet_wrap(~ minoritized2 + mand_min2) +
+  scale_x_date(name = "Filing Year",
+  )
+```
+
+# Disparities in Charging
+
+## Percent of Minoritized People Charged
+```{r census data, message=FALSE, results=FALSE}
+# add pop data and do rate of minoritized/white over time
+library(tidycensus)
+library(lubridate)
+
+# Add population estimates from census
+popvars <- c(total = "B02001_001",
+            white = "B02001_002")
+census_api_key(key = "55fdb905b160933490e981b1c694bd3df806ff80", overwrite = TRUE, install = TRUE)
+readRenviron("~/.Renviron")
+
+pop_state <-
+  map_df(2019:2010,
+         ~ get_acs(
+           year = .x,
+           geography = "state",
+           state = "VA",
+           variables =  popvars,
+           survey = "acs1", 
+           output = "wide",
+           cache = TRUE
+         ) %>%
+           mutate(year = .x)
+  )
+
+# 2020 census used instead
+pop_state_2020 <- get_decennial(
+  geography = "state",
+  state = "51",
+  variables = c(totalE = "P1_001N",
+                whiteE = "P1_003N"),
+  output = "wide",
+  year = 2020
+) %>% 
+  mutate(year = 2020)
+
+# bind these and create minoritized count,
+pop_state <- bind_rows(pop_state, pop_state_2020)
+
+pop_state <- pop_state %>% 
+  mutate(minoritizedE = totalE-whiteE,
+    percent_white = (whiteE/totalE)*100,
+         percent_minoritized = 100-percent_white)
+
+library (readr)
+pop_state <-pop_state
+
+write_csv(x = pop_state, "pop_state.csv")
+
+```
+
+```{r percentmin}
+# note the jump from the census count (versus estimation from ACS survey) in 2020!
+ggplot(pop_state, aes(x = year, y = percent_minoritized)) +
+  geom_line(color="black") +
+  expand_limits(y = c(0,50)) +
+  labs(title="Percent Minoritized People Charged", x="Year", y="Percent Minoritized")
+```
+
+## Charges Per 100,000 People
+```{r per, message=FALSE}
+# first create cases by year/minoritized and join to pop by year
+assault_year <- cc_allassault_2010_2020 %>% 
+  filter(!is.na(minoritized)) %>% 
+  mutate(filed_year = year(Filed),
+         minoritized = ifelse(minoritized == 1, "minoritized", "nonminoritized"),
+         mand_min = ifelse(mand_min == 1, "minimum", "nonminimum")) %>% 
+  group_by(filed_year, minoritized, mand_min) %>% 
+  summarize(cases = n()) %>% 
+  pivot_wider(id_cols = filed_year, names_from = c(minoritized, mand_min), values_from = cases)
+
+# then join population to above yearly counts
+assault_year <- left_join(assault_year, pop_state, by = c("filed_year" = "year"))
+
+# And create rates
+assault_year <- assault_year %>% 
+  mutate(min_mandmin_rate = (minoritized_minimum/minoritizedE)*100000,
+         min_nomandmin_rate = (minoritized_nonminimum/minoritizedE)*100000,
+         majority_mandmin_rate = (nonminoritized_minimum/whiteE)*100000,
+         majority_nomandmin_rate = (nonminoritized_nonminimum/whiteE)*100000)
+
+                               
+# and graph or table or use in other ways
+# to graph, reshape to long
+assault_year_long <- assault_year %>% 
+  select(filed_year, min_mandmin_rate:majority_nomandmin_rate) %>% 
+  pivot_longer(cols = -filed_year, names_to = "type", values_to = "rate")
+
+assault_year_long$type <- factor(assault_year_long$type,
+                               labels = c("Non-minoritized mandatory min", "Non-minoritized simple assault", "Minoritized mandatory min", "Minoritized simple assault"))
+
+library (stringr)
+assault_year_long$type2 = str_sub(assault_year_long$type, -3)
+
+assault_year_long%>%
+mutate(assault_type = recode(type2,
+                            "min" = "Mandatory Minimum",
+                            "ult" = "No Mandatory Minimum")) %>%
+ggplot(aes(x = filed_year, y = rate, color = type)) + 
+  geom_line() +
+  labs(title="Individuals charged per 100,000 residents", x="Year", y="Number per 100,000") + 
+  facet_wrap(~assault_type) +
+  scale_color_manual(values = c('Purple', 'Purple','Blue', 'Blue')) 
+
+
+```
+
+In both cases minoritized individuals are more likely to be charged than those in the majority population. The disparity in mandatory minimums seems to be smaller than the racial disparity in the cases without mandatory minimums. 
+
+# Disparities in Guilty Verdicts
+
+
+```{r verdicts, message=FALSE}
+
+m_verdicts <- cc_allassault_2010_2020 %>% 
+  mutate(simple=0) %>% 
+  filter(mand_min==1) %>%
+  filter(minoritized == 0 | minoritized == 1) %>%
+  group_by(minoritized) %>%  
+  mutate(total = n()) %>% 
+  filter(Result %in% c("Sentenced", "Sent")) %>% 
+  summarize(total_cases = mean(total),
+            simple = mean(simple),
+            total_sentenced = n(),
+            proportion_sentenced = (total_sentenced/total_cases))
+
+s_verdicts <- cc_allassault_2010_2020 %>% 
+  filter(minoritized == 1 | minoritized == 0) %>% 
+  filter(mand_min == 0) %>% 
+  group_by(minoritized) %>%  
+  mutate(total = n(),
+         simple = 1) %>% 
+  filter(Result %in% c("Sentenced", "Sent")) %>% 
+  summarize(total_cases = mean(total),
+            simple = mean(simple),
+            total_sentenced = n(),
+            proportion_sentenced = (total_sentenced/total_cases))
+
+
+verdicts <- rbind(m_verdicts, s_verdicts)
+
+```
+
+## Proportion Guilty in Mandatory Minimum Cases
+```{r print_mverdicts}
+m_verdicts
+```
+
+## Proportion Guilty in Simple Assault Cases
+```{r print_sverdicts}
+s_verdicts
+```
+
+```{r visualize, message=FALSE}
+
+verdicts$simple <- factor(verdicts$simple,
+                          levels = c(0,1),
+                          labels=c("mandatory min", "simple assault"))
+
+verdicts$minoritized <- factor(verdicts$minoritized,
+                               levels = c(0,1),
+                               labels = c("non-minoritized", "minoritized"))
+
+library(scales)
+
+verdicts %>% 
+  ggplot(aes(x=minoritized, y=proportion_sentenced, fill=minoritized)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label=percent(proportion_sentenced)), position=position_dodge(width=0.9), vjust = -0.25) +
+  facet_wrap(~simple) +
+  labs(title="Proportion of Guilty Verdicts", x="Race", y="% Guilty") +
+  scale_fill_manual(values=c('Purple', 'Blue')) +
+  theme(legend.position = "none")
+
+```
+
+As shown above, we find that the proportion of minoritzed peopled found guilty is lower both for crimes associated with and without a mandatory minimum. This might be because minoritized people are more likely to be charged with crimes in the first place due to racially motivated factors other than actual culpability.
+
+## Comparing Simple Assault Charges and Verdicts
+```{r patch, message=FALSE}
+
+library(patchwork)
+
+assault_year_long <- assault_year %>% 
+  select(filed_year, min_nomandmin_rate, majority_nomandmin_rate) %>% 
+  pivot_longer(cols = -filed_year, names_to = "type", values_to = "rate")
+
+assault_year_long$type <- factor(assault_year_long$type,
+                              labels = c("non-minoritized", "minoritized"))
+
+minmajority <- assault_year_long %>% 
+ggplot(aes(x = filed_year, y = rate, color = type)) + 
+  geom_line() +
+  labs(title="Charges", x="Year", y="Individuals Charged per 100,000") +
+  scale_color_manual(values=c('Purple', 'Blue'))
+
+s_verdicts$minoritized <- factor(s_verdicts$minoritized,
+                               levels = c(0,1),
+                               labels = c("non-minoritized", "minoritized"))
+
+library(ggplot2)
+library(RColorBrewer)
+
+vgraph <- s_verdicts %>% 
+  ggplot(aes(x = minoritized, y=proportion_sentenced, fill=minoritized)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label=percent(proportion_sentenced)), position=position_dodge(width=0.9), vjust = -0.25) +
+  theme(legend.position = "none") +
+  labs(title="Verdicts", x="Race", y="% Guilty") +
+  scale_fill_manual(values=c('Purple', 'Blue'))
+  
+
+minmajority + vgraph
+
+```
+
+# Disparities in Sentence Times
+
+## First, we did a simple comparison of sentence time summary statistics between simple assault charges and mandatory minimum charges.
+```{r summary stats, message=FALSE}
+cc_assault_2010_2020 %>% 
+  filter(SentenceTime!="NA") %>% 
+  group_by(mand_min) %>% 
+  summarize(max_sentence = max(SentenceTime),
+            min_sentence = min(SentenceTime),
+            avg_sentence = mean(SentenceTime),
+            med_sentence = median(SentenceTime),
+            number_cases = n())
+```
+
+We found that while just 85% of sentences for assaults without mandatory minimums were >= 180 days, 98% of sentences for assaults with mandatory minimums were >= 180 days.
+
+## Next, we looked at disparities in sentence time by race.
+
+We saw similar trends in sentencing for both simple assault charges and mandatory minimum charges. Defendants from minoritized groups appear more likely to have longer sentences, but it does not appear that mandatory minimums exacerbate the disparity. 
+```{r racial disparity graph, message=FALSE, warning=FALSE}
+
+cc_assault_2010_2020$minoritized <- factor(cc_assault_2010_2020$minoritized,
+  labels = c("Non-Minoritized", "Minoritized"))
+
+cc_assault_2010_2020 %>% 
+  filter(minoritized!="NA") %>% 
+  mutate(ncases = n()) %>% 
+  group_by(SentenceTime, minoritized, mand_min) %>% 
+  mutate(pctcases = n()/ncases) %>% 
+  ggplot(aes(x=SentenceTime, color=mand_min)) +
+  xlim(0,2000) +
+  geom_density() +
+  geom_vline(xintercept = 180) +
+  facet_wrap(~minoritized) +
+  scale_color_manual(values=c('Purple','Blue'))
+```
+
+## To get more information about the trend we were seeing in the graph, we ran some simple linear models. 
+
+These models are not meant to be predictive, but they can give us more information about the relationship between race and sentence time for mandatory minimum vs simple assault.
+```{r setup for models, include = FALSE}
+cc_assault_2010_2020 <- cc_assault_2010_2020 %>% 
+  mutate(class1 = ifelse(Class=="1",1,0)) 
+cc_assault_2010_2020 <- cc_assault_2010_2020 %>% 
+  mutate(over_minimum = (ifelse(SentenceTime>180,1,0)))
+library(modelsummary)
+library(broom)
+library(ggeffects)
+```
+## Our main model is a regression of minoritized on sentence time, including an interaction term and controls for sex, charge type, and class.
+```{r Model 1, message=FALSE}
+lm_sentence_time <- lm(SentenceTime ~ minoritized*mand_min + Sex + ChargeType,
+                       data=cc_assault_2010_2020)
+tidy_sentence_time <- tidy(lm_sentence_time, conf.int = TRUE)
+tidy_sentence_time
+predict <- ggpredict(lm_sentence_time, terms = c("mand_min", "minoritized"), 
+                     condition = c(Sex = "Male", ChargeType = "Misdemeanor")) 
+ggplot(predict, aes(x = x, y = predicted, color = group, ymin = conf.low, ymax = conf.high)) +
+  geom_pointrange(position = position_dodge(width = 0.5), size = 0.25) +
+  xlab("Charge") + ylab("Predicted Sentence Time") +
+  scale_x_discrete(labels=c("0" = "Simple Assault", "1" = "Mandatory Minimum Assault")) +
+  labs(color="Minoritized") +
+  scale_color_manual(values=c('Purple','Blue'))
+```
+
+Main conclusions from the model:\
+* For simple assault charges, average sentence times are shorter for White Non-Hispanic individuals than for individuals from minoritized racial identities.\
+* For mandatory minimum assault charges, average sentence times are longer for White Non-Hispanic individuals than for individuals from minoritized racial identities.\
+* For a non-white male charged with a misdemeanor, the predicted sentence time is actually shorter if he is charged with mandatory minimum assault than if he is charged with simple assault. The opposite is true for white males. \
+
+Potential explanation of this result:\ 
+
+* The crimes that people from the dominant racial group are charged with and found guilty of are, on average, more severe crimes than the ones minoritized individuals are charged with and found guilty of because of bias in charging and sentencing in the criminal justice system.\
+* Minoritized individuals may be more likely to be charged with minor offenses, which would have shorter sentence times. Therefore, this may not be an apples-to-apples comparison.\
+
+## Additional models 
+
+We also looked at the following variations of the above model:\
+
+* Changing the outcome to likelihood of receiving a sentence longer than 180 days\ 
+* Changing the outcome to likelihood of receiving a sentence longer than the median sentence\
+The conclusions from both of these models were similar to the conclusions from the main model.\
+
+# Regression lines
+
+The first plot shows the relationship between being from a minoritized racial group and sentence time. There is a slight positive slope for simple assault charges and a slight negative slope for mandatory minimum charges.
+```{r sentence time regression line, message=FALSE, warning=FALSE}
+cc_assault_2010_2020$minoritized_c <- as.numeric(cc_assault_2010_2020$minoritized)
+ggplot(cc_assault_2010_2020, aes(x = minoritized_c, y = SentenceTime, color=mand_min))+
+  geom_smooth(method = "lm", se=FALSE) +
+   xlab("Minoritized") + ylab("Sentence Time") + 
+  scale_x_continuous(name="Minoritized",  breaks=c(0,2,1), labels=c("0"="", "1"="Minoritized","2"="Non-Minoritized")) +
+  scale_color_manual(values=c('Purple','Blue'))
+```
+
+The second plot shows the relationship between being from a minoritized racial group and receiving a sentence over 180 days. The same pattern as the sentence time graph holds.
+```{r over minimum regression line, message=FALSE, warning=FALSE}
+ggplot(cc_assault_2010_2020, aes(x = minoritized_c, y = over_minimum, color=mand_min))+
+  geom_smooth(method = "lm", se=FALSE) +
+   xlab("Minoritized") + ylab("% Over Minimum Sentence") + 
+  scale_x_continuous(name="Minoritized",  breaks=c(0,2,1), labels=c("0"="", "1"="Minoritized","2"="Non-Minoritized")) +
+  scale_color_manual(values=c('Purple','Blue'))
+```
+
+
+# Conclusions and extensions
+
+Our main finding is that mandatory minimums do not seem to significantly impact the existing racial disparities between the majority and minoritized populations. This finding is not what we expected to find through our literature review and existing knowledge. In order to have more confidence in these findings we would ideally have a better understanding how the race variable was originally coded and how it's collected. We would also like more information about the egregiousness of the crime and context surrounding each case. This would help us make more direct comparisons between cases. This would allow us to see if it takes a more severe crime for individuals in the majority population to be charged when compared to the minoritized population. We would also ideally like to see if members of the minoritized population are more likely to be charged when they have less evidence against them. Lastly, an extension of our research would be looking to see if these findings occur in other mandatory minimum charges. 
+
+
+# References
+
+1. Virginia State Crime Commission, Mandatory Minimum Sentences, http://vscc.virginia.gov/2021/VSCC%202020%20Annual%20Report%20Mandatory%20Minimum%20Sentences.pdf
+
+2. Fischman & Schanzenbach, Racial Disparities Under the Federal Sentencing Guidelines: The Role of Judicial Discretion and Mandatory Minimums, https://onlinelibrary.wiley.com/doi/full/10.1111/j.1740-1461.2012.01266.x 
+
+3. Starr & Rehavi, Mandatory Sentencing and Racial Disparity: Assessing the Role of Prosecutors and the Effects of Booker, https://www.yalelawjournal.org/article/mandatory-sentencing-and-racial-disparity-assessing-the-role-of-prosecutors-and-the-effects-of-booker
+
+# Endnotes
+
+[^1]: Virginia State Crime Commission, Mandatory Minimum Sentences at 111, http://vscc.virginia.gov/2021/VSCC%202020%20Annual%20Report%20Mandatory%20Minimum%20Sentences.pdf
+[^2]: Fischman & Schanzenbach, Racial Disparities, Judicial Discretion, and the United State Sentencing Guidelines

@@ -1,0 +1,859 @@
+---
+title: "Examining Probation in Four VA Metro Areas for 2020"
+author: Julian Brock and Anya Pfeiffer
+date: "2022-05-04"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+# Guiding Questions
+
+How do trends in probation compare across four urban areas in Virginia: Richmond, Virginia Beach, Roanoke, and Charlottesville?
+
+Is there a correlation between the relative socioeconomic status of a zip code and the prevalence of felony cases that involve probation?
+
+Does a person’s race affect how the criminal justice system interacts with them, especially when juries are in charge of sentencing? Could race be a factor affecting a person's chances of receiving probation? Does this differ across localities?
+
+
+# Overview of Probation in Virginia
+
+At the beginning of this project, we were expecting to see drastic disparities in the rates at which people receive probation — specifically, disparities across the variable of race. While the numbers do not line up perfectly, there is not the jarring difference that we were expecting to see. When comparing the charges in felony cases that had probation, we noticed that the largest number of cases actually had to do with probation violations. This might suggest that while getting probation is a good thing initially (it gets people out of jail and back into society, to an extent), the strict rules people on probation must follow put them at high risk for repeated interaction with the justice system or even returning to jail as a result of a violation. Because of this ambiguity around whether probation has a positive or negative impact on a person's life, we wanted to explore how probation rates and counts differ among four cities and metropolitan areas in Virginia.
+
+
+Beginning in July 2021, defendants will have the opportunity to choose, after conviction, whether their penalty comes from a jury or judge.
++ Historically jurors on a jury trials decide a defendant’s punishment
++ A defense attorney said that this will encourage defendants to not take plea deals and have more of a say in the result
++ Jurors can decide convictions well but sentencing is much harder (ex. Not aware of sentencing guidelines, also not given information about probation or alternatives to incarceration)
+
+(https://www.whsv.com/2021/06/30/virginia-see-new-option-jury-sentencing-beginning-july-1/ )
+
+# Process to Narrow and Add Data
+We filtered Virginia circuit court case data for the year 2020 to just encapsulate zip codes within the four metropolitan areas anchored by Richmond, Charlottesville, Virginia Beach, and Roanoke. We filtered data using zip codes in the addresses of case data and attached zip codes to metro area fips codes.
+
+In addition, we also obtained census data from the American Community Survey (ACS) to measure the population within each relevant zip code estimate the relative wealth and socioeconomic status of people living in a zip code. To estimate this we added the poverty rate and median household income for each zip code from ACS data to our Virginia court case data.We then used this data to complete our data investigation.
+
+# Resources
+American Community Survey Data
+Median Household Income
+https://data.census.gov/cedsci/table?q=S1901&tid=ACSST5Y2020.S1901 
+
+Poverty Rate
+https://data.census.gov/cedsci/table?q=S1701
+
+Population
+https://data.census.gov/cedsci/table?q=S0101
+
+
+# Collecting and Narrowing Data
+```{r}
+
+#Loading libraries and data, starting with the case data to explore sentences and probation
+
+library(tidyverse)
+
+Cases <- read.csv("../data/Cases.csv")
+
+```
+
+
+```{r}
+
+library(tidycensus)
+library(tigris)
+library(sf)
+library(janitor)
+library(viridis)
+library(kableExtra)
+library(DT)
+library(reactable)
+library(reactablefmtr)
+
+options(tigris_use_cache = TRUE)
+
+```
+
+
+```{r}
+
+## all zip codes in the four metro areas, add wealth and population data
+
+regionfips <- c("40060", "47260", "40220","16820") # richmond, va beach, roanoke, cville
+regiongeo <- core_based_statistical_areas(cb = TRUE)
+regiongeo <- regiongeo %>% 
+  filter(GEOID %in% regionfips)
+
+# ggplot(regiongeo) + geom_sf() # checking
+
+zcta_va <- zctas(state = 51, year = 2010)
+regionzcta <- st_intersection(zcta_va, regiongeo)
+
+# ggplot(regionzcta) + geom_sf() # checking
+
+# use these zips in regionzcta to pull census ACS data
+# Pulled Median Household Income, Poverty Rate, and Total Population
+sesvar <- c(medhhinc = "S1901_C01_012",
+            povrate = "S1701_C03_001",
+            totalpopulation = "S0101_C01_001")
+
+
+zip_ses <- get_acs(geography = "zcta",
+                   year = 2019,
+                   survey = "acs5",
+                   variables = sesvar,
+                   output = "wide")
+
+zip_ses <- zip_ses %>% 
+  mutate(zcta = str_sub(NAME, -5, -1)) %>% 
+  filter(zcta %in% regionzcta$ZCTA5CE10)
+
+# you can use zip_ses or regionzcta to filter circuit court zip codes
+#  join to zip_ses to integrate ses data
+#  join to regionzcta to bring in locality identifier (e.g., is the zip code in Richmond metro, VA Beach metro, etc.)
+
+
+
+```
+
+
+```{r}
+
+#Extract zip codes from addresses
+Cases <- Cases %>% 
+  mutate(is_zip = ifelse(str_detect(Address, "\\d{5}"), 1, 0),
+         zip_code = ifelse(is_zip == 1, str_sub(Address, start = -5), NA_character_))
+
+
+```
+
+```{r}
+
+#merging data to be able to filter by metro area
+
+names(Cases)[53] <- 'zcta'
+
+
+merged_data <- merge(Cases, zip_ses, by="zcta")
+
+names(regionzcta)[2] <- 'zcta'
+
+merged_data <- merge(merged_data, regionzcta, by="zcta")
+
+```
+
+
+# Creating Variables:
++ Sentence and Probation Indicators
+
++ Number of felony cases in a zip code and number of cases divided by population of zip code
+
++ Number of cases with a sentence in a zip code and the number of cases with a sentence divided by the population
+
++ Number of probation cases in a zip code and the number of probation cases divided by the population
+
++ Probation case rate by zip code (number of probation cases divided by total number of felony cases in a zip code)
+
+```{r}
+
+#Probation Indicator
+merged_data <- merged_data %>%  
+  mutate(ProbationTime = replace_na(ProbationTime , 0)) %>%
+  mutate(probation_present = ifelse(ProbationTime == 0 , 0 , 1)) %>% 
+  mutate (probation_presentqual = ifelse(probation_present == 0 , "No" , "Yes"))
+
+#Sentence Indicator
+merged_data <- merged_data %>%
+  mutate(SentenceTime = replace_na(SentenceTime , 0)) %>%
+  mutate(sentence_present = ifelse(SentenceTime == 0 , 0, 1)) %>% 
+  mutate (sentence_presentqual = ifelse(sentence_present == 0 , "No" , "Yes"))
+
+#Number of Felony Cases
+merged_data <- merged_data %>%
+  group_by(zcta) %>%
+  filter(ChargeType == "Felony") %>% 
+  mutate(totalcases = n())
+
+#Felony Case Rate
+merged_data <- merged_data %>% 
+  mutate(totalcases_pop = totalcases / totalpopulationE)
+
+#Number of cases with a sentence
+Sentence_data <- merged_data %>% 
+  group_by(zcta) %>%
+  filter(sentence_present == 1) %>%
+  mutate(totalsentcases = n())
+
+Sentence_data <- Sentence_data %>% 
+  mutate(sent_cases_pop = totalsentcases / totalpopulationE)
+
+
+#Number of cases with probation
+Probation_data <- merged_data %>%
+  group_by(zcta) %>%
+  filter(probation_present == 1) %>%
+  mutate(totalprobcases = n())
+
+#Probation population rate  
+Probation_data <- Probation_data %>% 
+  mutate(prob_cases_pop = totalprobcases / totalpopulationE)
+
+
+#Probation Case Rate with one observation per zip code
+Probationrates <- Probation_data %>% 
+  group_by(zcta) %>% 
+  summarize(numprobationcases = n() ,
+            cases = mean(totalcases) ,
+            povrate = mean(povrateE),
+            GEOID.y = first(GEOID.y)) %>% 
+  mutate(probation_rate = numprobationcases / cases)
+  
+
+```
+
+# Coding Race Two Ways
+
+For the purposes of this analysis, we have coded race in two different ways. The first way preserves the numerous classifications that officers or court officials might select to describe a person involved in a case. The second way simply organizes people into ‘white’ and ‘non-white.’ Choosing to code this variable multiple ways was a conscious choice. In our class, we talked a lot about the role that perception might play in interactions with officers. Since race in this dataset is not self-reported, it is subject to the perception or the bias of the police officer or court official who reports it. By recoding this variable into two larger buckets, we hope to capture the perception element. 
+
+In our analysis, we did look at the more specific buckets of race before re-coding the variable. This more specific analysis can be seen in Richmond. In all of our chosen cities/metro areas, there were not significant numbers of people represented in the dataset who were not coded as ‘black’ or ‘white.’ As such, we eliminated this more specific comparison for the other cities, and only included the re-coded variable.
+ 
+
+```{r, warning=FALSE}
+merged_data <- merged_data %>%
+  mutate(race_organized = fct_collapse(Race,
+                                       white = c("White Caucasian (Non-Hispanic)" , "White") ,
+                                       black = c("Black (Non-Hispanic)" , "Black") ,
+                                       asian = c("Asian Or Pacific Islander") ,
+                                       native_american = c("American Indian") ,
+                                       latinx = c("Hispanic") ,
+                                       other_unknown = c("Other (Includes Not Applicable, Unknown)" , "Unknown" , "")))
+
+merged_data <- merged_data %>%
+  mutate(race_condensed = fct_collapse(Race,
+                                       white = c("White Caucasian (Non-Hispanic)" , "White") ,
+                                       non_white = c("Black (Non-Hispanic)" , "Black", "Asian Or Pacific Islander", "American Indian", "Hispanic") ,
+                                       other_unknown = c("Other (Includes Not Applicable, Unknown)" , "Unknown" , "")))
+
+```
+
+
+
+# Overview of Richmond and its communities
+
+The 2021 Census reported Richmond as having a population that is 46% Black or African-American and 45% white. Much like Charlottesville and other cities across America, Richmond has a tumultuous history marked by redlining, which has led to acute disparities in neighborhoods across the city. One way this manifests is through health outcomes — people in neighborhoods that were redlined are more likely to suffer from chronic health conditions and also have shorter life expectancy than those in neighborhoods that were not redlined (Godoy, 2020). Poverty rates are higher, and even the average temperature of these neighborhoods are higher in the summer due to a lack of old growth trees (Plumer & Popovich, 2020).
+
+There are lots of organizations doing work on equity issues in Richmond. Two we found in our research are linked here: Richmond Transparency and Accountability Project and Make Better Deeds
+
+https://richmondvatap.org/
+
+https://makebetterdeeds.org/
+
+https://www.facingwhiteness.incite.columbia.edu/richmond-explore-2
+
+Godoy, M. (2020, November 19). In U.S. Cities, The Health Effects Of Past Housing Discrimination Are Plain To See. NPR. https://www.npr.org/sections/health-shots/2020/11/19/911909187/in-u-s-cities-the-health-effects-of-past-housing-discrimination-are-plain-to-see#:~:text=hence%2C%20%22redlining.%22&text=Digital%20Scholarship%20Lab-
+
+Plumer, B., & Popovich, N. (2020, August 24). How Decades of Racist Housing Policy Left Neighborhoods Sweltering. The New York Times. https://www.nytimes.com/interactive/2020/08/24/climate/racism-redlining-cities-global-warming.html
+
+
+
+# Investigating Richmond
+## Summary statistics
+Cases with a sentence and cases with a probation
+
+```{r}
+
+merged_data %>% 
+  filter(GEOID.y == 40060) %>%
+  filter(sentence_presentqual == "Yes") %>% 
+  summarize(numscases = n() ,
+            meanslength = mean(SentenceTime) ,
+            medianslength = median(SentenceTime) ,
+            maxslength = max(SentenceTime) ,
+            minslength = min(SentenceTime))
+
+
+merged_data %>% 
+  filter(GEOID.y == 40060) %>%
+  filter(probation_presentqual == "Yes") %>% 
+  summarize(numpcases = n() ,
+            meanplength = mean(ProbationTime) ,
+            medianplength = median(ProbationTime) ,
+            maxplegnth = max(ProbationTime) ,
+            minplength = min(ProbationTime))
+
+
+```
+
+
+## Charges for felonies
+Associated charges with felonies that included a probation 
+```{r}
+
+
+Richmondtable <- Probation_data %>%
+  filter(GEOID.y == "40060") %>% 
+  group_by(Charge , zcta) %>%
+  summarize(total_by_charge = n())
+
+Richmondtable <- Richmondtable %>%
+  select(zcta, Charge, total_by_charge)
+datatable(Richmondtable, caption = "Charge Types in Richmond Probations")
+
+
+```
+
+
+## Proportion of Felony Cases with a Probation
+(Metro area compared to Independent City)
+
+```{r}
+
+merged_data %>%
+  filter(GEOID.y == "40060") %>%
+  filter(sentence_present == 1) %>% 
+  filter(ChargeType %in% c("Felony")) %>% 
+  group_by(probation_presentqual) %>% 
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  coord_cartesian(xlim = c(0,5000))
+
+merged_data %>%
+  filter(fips == "760") %>%
+  filter(sentence_present == 1) %>% 
+  filter(ChargeType %in% c("Felony")) %>% 
+  group_by(probation_presentqual) %>% 
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  coord_cartesian(xlim = c(0,5000))
+
+
+```
+
+Probation numbers in the city of Richmond are extremely peculiar. When glancing at rates of probation in the metro area, they do not seem too different from rates in the other areas. However, almost no probation is given out for cases in the city itself. A quick search did not reveal any differences in rules between the City of Richmond and other places, so there was not a clear reason for why the city’s rates of probation are so low. This might be something for a future group to look into — does this trend continue across years? Are there any other patterns we missed?
+
+## Comparing case rates by zip code to associated poverty rates
+(Relative measures of socioeconomic status of community include median household income and poverty rate)
+
+The following scatter plots show the relationship between variables of interest and the poverty rate or median houshold income in a given zip code. Each point represents one zip code.
+
+```{r}
+
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "40060") %>% 
+  ggplot(aes(x= povrateE , y = totalcases_pop )) +
+  ggtitle("Richmond, poverty rate v per capita number of felony cases") +
+  geom_point()
+
+
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "40060") %>% 
+  ggplot(aes(x= medhhincE , y = prob_cases_pop )) +
+  ggtitle("Richmond, med income v per capita probation cases") +
+  geom_point()
+
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "40060") %>% 
+  ggplot(aes(x= povrateE , y = prob_cases_pop )) +
+  ggtitle("Richmond, pov rate v per capita probation cases") +
+  geom_point()
+
+
+
+Probationrates %>% 
+  group_by(zcta) %>%
+  filter(GEOID.y == "40060") %>% 
+  ggplot(aes(x= povrate , y = probation_rate )) +
+  ggtitle("Richmond, pov rate v probation_rate") +
+  geom_point()
+
+
+```
+
+As seen in the scatterplots, there appears to be something of a relationship between poverty rate and rates of sentencing and probation. However, the relationship is fairly weak. One place where we see a positive relationship is when comparing the poverty rate to the rate at which cases with sentences occur. As the poverty rate rises, so does the sentencing rate (although there are zip codes that break the trend).
+
+There is a small but clear negative correlation between the poverty rate and the probation rate of a zip code.
+
+It is important to note that the poverty rate data is pulled from the American Community Survey (ACS) via the Census API. The poverty rate is the average pulled from each zip code. For the graphs showing median household income, that is the median for the zip code and is not directly connected to any individuals represented in the cases in that zip code.
+
+
+
+## Mapping case and probation rates
+Municipalities in Richmond Metro area divided by zip code
+Probation rate (#number of probation cases / # of felony cases)
+Poverty rate (from ACS data)
+
+```{r}
+
+va <- counties(state = "51" , cb= TRUE)
+
+Richmond <- va %>% 
+  filter(COUNTYFP %in% c("760" , "730" , "670" , "570" , "007" , "036" , "041" , "053" , "075" , "085" , "087" , "101" , "127" , "145" , "149" , "183"))
+
+Richmondzipcountymap <- st_intersection(Richmond, zcta_va)
+
+names(Richmondzipcountymap)[14] <- 'zcta'
+
+RichmondMapData <- merge(Probationrates, Richmondzipcountymap, by="zcta")
+
+
+ggplot(data = RichmondMapData) +
+  geom_sf(aes(fill = probation_rate , geometry = geometry)) +
+  scale_fill_viridis_c(option = "inferno" , direction = -1)
+
+
+ggplot(data = RichmondMapData) +
+  geom_sf(aes(fill = povrate , geometry = geometry)) +
+  scale_fill_viridis_c(option = "inferno" , direction = -1)
+
+```
+
+The negative correlation between probation rates and poverty rates is also shown on this map.
+
+## Investigating Race
+Is race correlated with the likelihood of a person receiving probation or not?
+
+```{r}
+merged_data %>%
+  filter(sentence_present == 1) %>%
+  filter(GEOID.y == "40060") %>%
+  filter(ChargeType == "Felony") %>%
+  group_by(probation_presentqual) %>%
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  ggtitle("Richmond, race_organized")+
+  coord_cartesian(xlim = c(0,8000)) +
+  facet_wrap(~race_organized)
+
+merged_data %>%
+  filter(sentence_present == 1) %>%
+  filter(GEOID.y == 40060) %>%
+  filter(ChargeType == "Felony") %>%
+  group_by(probation_presentqual) %>%
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  ggtitle("Richmond, race_condensed")+
+  coord_cartesian(xlim = c(0,8000)) +
+  facet_wrap(~race_condensed) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+
+
+
+
+# Expanding Our Investigation to Three Other Metropolitan Areas
+
+Side by Side Comparisons of Virginia Beach, Roanoke, and Charlottesville metropolitan Areas
+
+Before looking through the information below we suggest taking a look at the following two links to learn more about Charlottesville and its troubling racial history.
+
+(https://jeffschoolheritagecenter.org/collections/mapping-cville/ )
+
+(http://www2.iath.virginia.edu/schwartz/vhill/vhill.history.html )
+
+
+
+## Summary Statistics
+```{r}
+
+ThreeMetro <- merged_data %>% 
+  filter(GEOID.y == "47260" | GEOID.y == "40220" | GEOID.y == "16820")
+
+
+ThreeMetro %>% 
+  group_by(GEOID.y) %>%
+  filter(sentence_presentqual == "Yes") %>% 
+  summarize(numscases = n() ,
+            meanslength = mean(SentenceTime) ,
+            medianslength = median(SentenceTime) ,
+            maxslength = max(SentenceTime) ,
+            minslength = min(SentenceTime))
+
+
+ThreeMetro %>% 
+  group_by(GEOID.y) %>%
+  filter(probation_presentqual == "Yes") %>% 
+  summarize(numpcases = n() ,
+            meanplength = mean(ProbationTime) ,
+            medianplength = median(ProbationTime) ,
+            maxplegnth = max(ProbationTime) ,
+            minplength = min(ProbationTime))
+
+
+```
+
+## Charges associated with felonies
+Investigating what charges tend to be connected to felonies with a probation
+
+```{r}
+
+VirginiaBeachTable <- ThreeMetro %>%
+  filter(GEOID.y == "47260") %>% 
+  group_by(Charge , zcta) %>%
+  summarize(total_by_charge = n())
+
+VirginiaBeachTable <- VirginiaBeachTable%>%
+  select(zcta, Charge, total_by_charge)
+datatable(VirginiaBeachTable, caption = "Charge Types in  Virginia Beach Probations")
+
+
+RoanokeTable <- ThreeMetro %>%
+  filter(GEOID.y == "40220") %>% 
+  group_by(Charge , zcta) %>%
+  summarize(total_by_charge = n())
+
+RoanokeTable <- RoanokeTable%>%
+  select(zcta, Charge, total_by_charge)
+datatable(RoanokeTable, caption = "Charge Types in Roanoke Probations")
+
+CharlottesvilleTable <- ThreeMetro %>%
+  filter(GEOID.y == "16820") %>% 
+  group_by(Charge , zcta) %>%
+  summarize(total_by_charge = n())
+
+CharrlottesvilleTable <- CharlottesvilleTable%>%
+  select(zcta, Charge, total_by_charge)
+datatable(CharlottesvilleTable, caption = "Charge Types in Charlottesville Probations")
+
+```
+
+## Proportion of Felony Cases with a Probation 
+(Metro area compared to Independent City)
+
+### Virginia Beach
+```{r}
+merged_data %>% 
+  filter(sentence_present == 1) %>% 
+  filter(GEOID.y == 47260) %>%
+  filter(ChargeType == "Felony") %>% 
+  group_by(probation_presentqual) %>% 
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  coord_cartesian(xlim = c(0,5000))
+
+merged_data %>%
+  filter(fips == "810") %>%
+  filter(sentence_present == 1) %>% 
+  filter(ChargeType %in% c("Felony")) %>% 
+  group_by(probation_presentqual) %>% 
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  coord_cartesian(xlim = c(0,5000))
+
+
+
+```
+
+### Roanoke 
+```{r}
+merged_data %>%
+  filter(GEOID.y == "40220") %>%
+  filter(sentence_present == 1) %>% 
+  filter(ChargeType %in% c("Felony")) %>% 
+  group_by(probation_presentqual) %>% 
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  coord_cartesian(xlim = c(0,5000))
+
+merged_data %>%
+  filter(fips == "770") %>%
+  filter(sentence_present == 1) %>% 
+  filter(ChargeType %in% c("Felony")) %>% 
+  group_by(probation_presentqual) %>% 
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  coord_cartesian(xlim = c(0,5000))
+
+
+
+```
+
+### Charlottesville
+```{r}
+
+merged_data %>% 
+  filter(sentence_present == 1) %>% 
+  filter(GEOID.y == "16820") %>%
+  filter(ChargeType == "Felony") %>% 
+  group_by(probation_presentqual) %>% 
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  coord_cartesian(xlim = c(0,8000))
+
+merged_data %>%
+  filter(fips == "540") %>%
+  filter(sentence_present == 1) %>% 
+  filter(ChargeType %in% c("Felony")) %>% 
+  group_by(probation_presentqual) %>% 
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  coord_cartesian(xlim = c(0,8000))
+
+
+```
+
+
+## Comparing case rates by zip code to associated poverty rates
+Relative measures of socioeconomic status of community include median household income and poverty rate by zip code
+
+### Virginia Beach
+
+```{r}
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "47260") %>% 
+  ggplot(aes(x= povrateE , y = totalcases_pop )) +
+  ggtitle("Virginia Beach, poverty rate v per capita number of felony cases") +
+  geom_point()
+
+
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "47260") %>% 
+  ggplot(aes(x= medhhincE , y = prob_cases_pop )) +
+  ggtitle("Virginia Beach, med income v per capita probation cases") +
+  geom_point()
+
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "47260") %>% 
+  ggplot(aes(x= povrateE , y = prob_cases_pop )) +
+  ggtitle("Virginia Beach, pov rate v per capita probation cases") +
+  geom_point()
+
+
+Probationrates %>% 
+  group_by(zcta) %>%
+  filter(GEOID.y == "47260") %>% 
+  ggplot(aes(x= povrate , y = probation_rate )) +
+  ggtitle("Virginia Beach, pov rate v probation_rate") +
+  geom_point()
+
+```
+
+
+
+### Roanoke
+
+```{r}
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "40220") %>% 
+  ggplot(aes(x= povrateE , y = totalcases_pop )) +
+  ggtitle("Roanoke, poverty rate v per capita number of felony cases") +
+  geom_point()
+
+
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "40220") %>% 
+  ggplot(aes(x= medhhincE , y = prob_cases_pop )) +
+  ggtitle("Roanoke, med income v per capita probation cases") +
+  geom_point()
+
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "40220") %>% 
+  ggplot(aes(x= povrateE , y = prob_cases_pop )) +
+  ggtitle("Roanoke, pov rate v per capita probation cases") +
+  geom_point()
+
+
+Probationrates %>% 
+  group_by(zcta) %>%
+  filter(GEOID.y == "40220") %>% 
+  ggplot(aes(x= povrate , y = probation_rate )) +
+  ggtitle("Roanoke, pov rate v probation_rate") +
+  geom_point()
+
+```
+
+
+### Charlottesville
+
+```{r}
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "16820") %>% 
+  ggplot(aes(x= povrateE , y = totalcases_pop )) +
+  ggtitle("Charlottesville, poverty rate v per capita number of felony cases") +
+  geom_point()
+
+
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "16820") %>% 
+  ggplot(aes(x= medhhincE , y = prob_cases_pop )) +
+  ggtitle("Charlottesville, med income v per capita probation cases") +
+  geom_point()
+
+Probation_data %>% 
+  group_by(zcta) %>% 
+  filter(GEOID.y == "16820") %>% 
+  ggplot(aes(x= povrateE , y = prob_cases_pop )) +
+  ggtitle("Charlottesville, pov rate v per capita probation cases") +
+  geom_point()
+
+
+Probationrates %>% 
+  group_by(zcta) %>%
+  filter(GEOID.y == "16820") %>% 
+  ggplot(aes(x= povrate , y = probation_rate )) +
+  ggtitle("Charlottesville, pov rate v probation_rate") +
+  geom_point()
+```
+
+
+## Mapping case and probation rates by zip code
+
+
+### Virginia Beach Metro Area
+
+```{r}
+va <- counties(state = "51" , cb= TRUE)
+
+VirginiaBeach <- va %>% 
+  filter(COUNTYFP %in% c("550" , "620" , "650" , "700" , "710" , "735" , "740" , "800" , "810" , "830" , "073" , "093" , "095" , "115" , "175" , "199"))
+
+VirginiaBeachzipcountymap <- st_intersection(VirginiaBeach, zcta_va)
+
+names(VirginiaBeachzipcountymap)[14] <- 'zcta'
+
+VirginiaBeachMapData <- merge(Probationrates, VirginiaBeachzipcountymap, by="zcta")
+
+
+ggplot(data = VirginiaBeachMapData) +
+  geom_sf(aes(fill = probation_rate , geometry = geometry)) +
+  scale_fill_viridis_c(option = "inferno" , direction = -1)
+
+
+ggplot(data = VirginiaBeachMapData) +
+  geom_sf(aes(fill = povrate , geometry = geometry)) +
+  scale_fill_viridis_c(option = "inferno" , direction = -1)
+```
+
+
+
+### Roanoke Metro Area
+
+```{r}
+va <- counties(state = "51" , cb= TRUE)
+
+Roanoke <- va %>% 
+  filter(COUNTYFP %in% c("770" , "775" , "023" , "045" , "067" , "161"))
+
+Roanokezipcountymap <- st_intersection(Roanoke, zcta_va)
+
+names(Roanokezipcountymap)[14] <- 'zcta'
+
+RoanokeMapData <- merge(Probationrates, Roanokezipcountymap, by="zcta")
+
+
+ggplot(data = RoanokeMapData) +
+  geom_sf(aes(fill = probation_rate , geometry = geometry)) +
+  scale_fill_viridis_c(option = "inferno" , direction = -1)
+
+
+ggplot(data = RoanokeMapData) +
+  geom_sf(aes(fill = povrate , geometry = geometry)) +
+  scale_fill_viridis_c(option = "inferno" , direction = -1)
+```
+
+
+
+### Charlottesville Metro Area
+```{r}
+va <- counties(state = "51" , cb= TRUE)
+
+Charlottesville <- va %>% 
+  filter(COUNTYFP %in% c("540" , "125" , "003" , "029" , "065" , "079" , "109"))
+
+Charlottesvillezipcountymap <- st_intersection(Charlottesville, zcta_va)
+
+names(Charlottesvillezipcountymap)[14] <- 'zcta'
+
+CharlottesvilleMapData <- merge(Probationrates, Charlottesvillezipcountymap, by="zcta")
+
+
+ggplot(data = CharlottesvilleMapData) +
+  geom_sf(aes(fill = probation_rate , geometry = geometry)) +
+  scale_fill_viridis_c(option = "inferno" , direction = -1)
+
+
+ggplot(data = CharlottesvilleMapData) +
+  geom_sf(aes(fill = povrate , geometry = geometry)) +
+  scale_fill_viridis_c(option = "inferno" , direction = -1)
+```
+
+
+
+
+## Investigating Race 2.0
+Is race correlated with the likelihood of a person receiving probation or not?
+
+### Virginia Beach
+
+```{r}
+merged_data %>%
+  filter(sentence_present == 1) %>%
+  filter(GEOID.y == "47260") %>%
+  filter(ChargeType == "Felony") %>%
+  group_by(probation_presentqual) %>%
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  ggtitle("Virginia Beach, race_condensed")+
+  coord_cartesian(xlim = c(0,8000)) +
+  facet_wrap(~race_condensed) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+### Roanoke
+
+```{r}
+merged_data %>%
+  filter(sentence_present == 1) %>%
+  filter(GEOID.y == "40220") %>%
+  filter(ChargeType == "Felony") %>%
+  group_by(probation_presentqual) %>%
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  ggtitle("Roanoke, race_condensed")+
+  coord_cartesian(xlim = c(0,5000)) +
+  facet_wrap(~race_condensed) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+### Charlottesville
+
+```{r}
+merged_data %>%
+  filter(sentence_present == 1) %>%
+  filter(GEOID.y == "16820") %>%
+  filter(ChargeType == "Felony") %>%
+  group_by(probation_presentqual) %>%
+  ggplot(aes(x= SentenceTime , fill = probation_presentqual)) +
+  geom_histogram() +
+  ggtitle("Charlottesville, race_condensed")+
+  coord_cartesian(xlim = c(0,5000)) +
+  facet_wrap(~race_condensed) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+# Future Research Opportunities
+
+While we’ve made substantial progress on this topic throughout the semester, there are a few things that we were unable to incorporate. The following is a short list of topics we’d recommend that any students interested in pursuing the same topic focus on:
+
++ Incorporate data from years other than 2020 into this analysis (could still run the same analysis, but with more data/years)
+
++ Specifically analyze the potential impacts of the Virginia law change surrounding judge sentencing. Data from the years following the implementation of this rule may reveal interesting insights about the impacts of having more judges delivering sentences as opposed to getting them from juries.
+
++ Dig more into the hearing data connected with these cases. We did some preliminary research on hearings, but ultimately decided to go another direction. In the future, another group could focus more on learning about the differences between types of hearings, the implications associated with each, and how this might impact probation and sentencing.
+

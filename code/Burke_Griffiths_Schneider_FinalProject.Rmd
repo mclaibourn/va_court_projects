@@ -1,0 +1,596 @@
+---
+title: "Public Interest Data: Ethics & Practice"
+subtitle: "Final Project"
+author: "Max Schneider, Hallie Griffiths, Dylan Burke"
+date: '2022-05-04'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    code_folding: hide
+    theme: journal
+    df_print: paged
+    fig_width: 7
+    fig_height: 5
+---
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, rows.print=10)
+
+options(scipen = 6, digits = 4)
+```
+
+# Introduction 
+
+#### Research Question: How does the revenue from fees/forfeitures compare to total revenue within Virginia's localities? Are there differences in assessment of fines, policing, incidences of traffic cases and case outcomes?
+
+
+Our project was inspired by [this study](https://journals.sagepub.com/doi/full/10.1177/1078087418791775). The authors explore the effects of the percent of a local government's revenue that comes from collecting fines, fees, and asset forfeitures on the rate at which their police departments solve violent and property crimes. They find that as the share of revenue from fines increases, crime clearance rate falls. 
+
+The general court data is not coded in a uniform way. Therefore it is difficult to easily discern in what types of cases fines are being assessed. According to the study by Goldstein, et. al. linked above, over 80% of involuntary police contact (contact initiated by offers, as opposed to citizens calling the police, or initiating contact in some other way) occurs due to traffic violations. Additionally, police officers tend to have a high level of discretion about the severity of tickets during traffic stops. 
+
+Taking all of this into account, we ultimately want to investigate if, in traffic cases, the share of revenue that comes from fines is correlated to the number and severity of fines assessed for localities in Virginia. While beyond the scope of our project, the rates of fine and forfeitures as a percentage of income
+
+# Set Up 
+
+```{r}
+# Load needed libraries
+library(tidyverse)
+library(janitor)
+library(rcartocolor)
+library(readxl)
+library(sf)
+library(tigris)
+library(scales) 
+library(ggthemes)
+library(modelsummary)
+library(corrplot)
+library(stargazer)
+library(kableExtra)
+options(tigris_use_cache = TRUE) 
+
+# Read in regional circuit court data
+general <- readRDS("../data/gd_case_2017.RDS")
+
+# Camel case to snake case
+general <- general %>% 
+  clean_names()
+```
+
+# Descriptive data
+
+Title 46.2 of the Code of Virginia pertains to Motor Vehicles. Because of the high level of pulbic-police interaction and our hypothesis that police officers will have the highest degree of discression during traffic stops, we will only be looking at cases that include this code. 
+
+#### What is the distribution of infractions, misdemeanors, and felonies in the general court data?
+```{r}
+general %>% 
+  filter(str_detect(code_section, "46.2", negate = FALSE)) %>%
+  select(case_type) %>%
+  filter(case_type == "Infraction" | case_type == "Misdemeanor" | case_type == "Felony") %>%
+  ggplot(aes(x = fct_infreq(case_type), fill = case_type)) +
+  geom_bar()
+```
+
+As expected, among traffic violations, the majority of cases are infractions. About one-sixth of cases are misdemeanors. There are very few felonies in the general court data for traffic cases. Many of the more serious cases, and therefore felonies, would likely be adjudicated in the circuit court. 
+
+#### Of traffic violations, how many cases have a fine assoicated with it, what is the percentage of cases with a fine, and what are the minimum, average, median, and maximum fines in these cases?
+```{r}
+fine_tab <- general %>%
+  filter(str_detect(code_section, "46.2", negate = FALSE)) %>%
+  mutate(num_cases = n()) %>%
+  filter(fine > 0) %>%
+  summarize(first(num_cases),
+    num_cases_fine = n(),
+    pct_fine = n() / first(num_cases),
+    min_fine = min(fine),
+    mean_fine = mean(fine),
+    median_fine = median(fine),
+    max_fine = max(fine)
+  )
+
+kbl(fine_tab)
+```
+Fines are present in about 75 percent of traffic cases. Fines range from $0.10 to $35,288 with an average fine of $90.83. 
+
+#### In traffic cases where fines are present, how does the number of cases vary by race?
+```{r}
+general <- general %>%
+  mutate(race7 = fct_collapse(race,
+                              unknown = c("", "Unknown", "Unknown (Includes Not Applicable, Unknown)"),
+                              amind = c("American Indian", "American Indian or Alaskan Native"),
+                              asian = c("Asian or Pacific Islander", "Asian Or Pacific Islander"),
+                              black = c("Black", "Black(Non-Hispanic)"),
+                              white = c("White", "White Caucasian(Non-Hispanic)"),
+                              latinx = c("Hispanic"),
+                              remaining = c("Other(Includes Not Applicable, Unknown)", "NA")))
+
+general %>%
+  filter(str_detect(code_section, "46.2", negate = FALSE)) %>%
+  filter(fine > 0) %>%
+  group_by(race7) %>%
+  ggplot(aes(fct_infreq(race7), fill = race7)) +
+  geom_bar() +
+  labs(y = "", title = "Number of Traffic Cases Filed by Race") +
+  guides(color = "none")
+```
+We felt this method was the best way to recode race to give us fewer and clearer categories than are provided in the raw dataset. Race is likely coded as a function of perception rather than how the person in the data actually identifies. While this is problematic, there is no way to account for this in our analysis. Race has therefore been recoded in the way that we believe best maintains the original coding. 
+
+Fines are racially assessed in way that is not unexpected. Black defendants do seem to have a slightly highers share of cases with fines than their share of the Virginia population. This may be a factor of police fining Black people at higher rates. However, it could also be a factor of out of state drivers. To know for sure, we would need to know the demographics of out of state drivers that drive in Virginia. The state is surrounded by states with significantly high Black populations near the state line. 
+
+```{r}
+## generating total fines and traffic fines by county in 2017
+general <- general %>% 
+  mutate(fips3 = str_pad(as.character(fips), 3, side = "left", pad = "0"))
+
+fines_assessed_2017 <- general %>%
+   filter(fine > 0) %>%
+  group_by(fips3) %>%
+  summarize(total_fines = sum(fine))
+
+traffic_fines_assessed_2017 <- general %>% 
+  filter(fine > 0) %>%
+  filter(str_detect(code_section, "46.2", negate = FALSE)) %>%
+  group_by(fips3) %>%
+  summarize(traffic_fines = sum(fine))
+
+fines_assessed_2017 <- left_join(fines_assessed_2017, traffic_fines_assessed_2017, by="fips3")
+
+fines_assessed_2017 <- fines_assessed_2017 %>% mutate(ratio_from_traffic=(traffic_fines/total_fines))
+
+va_counties <- counties(state = 51, cb = TRUE)
+
+va_counties <- va_counties %>% 
+  left_join(fines_assessed_2017, by = c("COUNTYFP" = "fips3"))
+
+map_data4 <- va_counties %>%
+  select(COUNTYFP, NAME, NAMELSAD, traffic_fines, total_fines, ratio_from_traffic, GEOID, geometry)
+
+```
+
+# Fines assessed 
+
+#### Total fines versus traffic fines by county in 2017
+```{r}
+county_tab <- fines_assessed_2017 %>% 
+  mutate(ratio_from_traffic=(traffic_fines/total_fines)) %>% 
+  arrange(desc(ratio_from_traffic))
+
+county_tab <-left_join(county_tab, va_counties, by=c("fips3"="COUNTYFP"))
+
+
+kbl(county_tab %>% select(NAMELSAD, total_fines.x, traffic_fines.x, ratio_from_traffic.x),
+    col.names= c("Locality", "Total Fines", "Traffic Fines", "Percent Traffic Fines"),
+    align="lccc",
+    format.args=list(big.mark = ',')) %>% 
+  kable_material(row_label_position=c,
+              
+                html_font= "arial") %>% 
+  scroll_box(height = "400px")
+
+```
+
+```{r}
+ggplot(data = map_data4) + 
+  geom_sf(aes(fill = ratio_from_traffic)) +
+  scale_fill_carto_c(palette = "ag_Sunset", direction=-1) +
+  theme_void() +
+  theme(legend.position = "right")
+```
+Fines from traffic cases make up a significant amount of the total fines that counties and cities collect throughout the state. 
+
+Maximum: Greensville County (98.9%)  
+Minimum: Radford City (35.1%)
+
+#### Fines assessed to all cases in 2017 by county
+```{r}
+ggplot(data = map_data4) + 
+  geom_sf(aes(fill = total_fines)) +
+  scale_fill_carto_c(palette = "Emerald") +
+  theme_void() +
+  theme(legend.position = "right")
+```
+Maximum: Fairfax County ($17,140,071)  
+Minimum: Craig County ($28,806)
+
+#### Fines assessed to traffic cases in 2017 by county
+```{r}
+ggplot(data = map_data4) + 
+  geom_sf(aes(fill = traffic_fines)) +
+  scale_fill_carto_c(palette = "Emerald") +
+  theme_void() +
+  theme(legend.position = "right")
+```
+Maximum: Fairfax County ($11,558,084)  
+Minimum: Craig County ($23,426) 
+
+As seen in the two maps above, there is little difference in the distribution of counties in terms of fine collection and fine collection from traffic cases. 
+
+# State and Local Government Finances and Population Data
+
+```{r}
+# Add in 2017 Annual Survey of State and Local Government Finances data
+
+cog <- read_fwf("../data/2017FinEstDAT_06102021modp_pu.txt",
+                fwf_widths(c(12,3,12,4,1), c("id", "item", "amount", "year", "imp")))
+
+cog <- cog %>% 
+  mutate(state = str_sub(id, 1,2),
+         type = str_sub(id, 3, 3),
+         county = str_sub(id, 4, 6),
+         unit = str_sub(id, 7,12))
+
+
+# filter to locality governments
+vacog <- cog %>% 
+  filter(state == "51",
+         type %in% c("1", "2"))
+```
+
+```{r}
+# Generate variable for total revenue
+
+totrevcode <- c("T01", "T08", "T09", "T10", "T11", 
+                "T12", "T13", "T14", "T15", "T16",
+                "T19", "T20", "T21", "T22", "T23",
+                "T24", "T25", "T27", "T28", "T29",
+                "T40", "T41", "T50", "T51", "T53",
+                "T99", "A01", "A03", "A06", "A09",
+                "A10", "A12", "A14", "A16", "A18",
+                "A21", "A36", "A44", "A45", "A50",
+                "A54", "A56", "A59", "A60", "A61",
+                "A80", "A81", "A87", "A89", "U01",
+                "U10", "U11", "U20", "U30", "U40",
+                "U41", "U50", "U95", "U99", "B01",
+                "B21", "B22", "B27", "B30", "B42",
+                "B46", "B47", "B50", "B54", "B59",
+                "B79", "B80", "B89", "B91", "B92",
+                "B93", "B94", "C21", "C28", "C30",
+                "C42", "C46", "C47", "C50", "C67",
+                "C79", "C80", "C89", "C91", "C92",
+                "C93", "C94", "D11", "D21", "D30",
+                "D42", "D46", "D47", "D50", "D79",
+                "D80", "D89", "D91", "D92", "D93", "D94")
+
+
+vatotalrev <- vacog %>%
+  filter(item %in% totrevcode) %>% # mpc added
+  group_by(county) %>%
+  summarize(total_revenue = sum(amount))
+```
+
+```{r}
+# Generate variable for total fines
+
+vafines <- vacog %>%
+  select(item, amount, county) %>%
+  filter(str_detect(item, "U30", negate = FALSE))
+
+vafines <- vafines %>% 
+  group_by(county) %>% 
+  summarize(amount = sum(amount))
+```
+
+```{r}
+# Merge new dataframes
+
+varevfines <- merge(vafines, vatotalrev ,by="county")
+```
+
+```{r}
+# Generate variable for percent of revenue generated by fines
+
+varevfines <- left_join(vatotalrev, vafines, by="county") %>%
+  mutate(fine_revenue = replace_na(amount, 0),
+    pct_rev_from_fines = (fine_revenue / total_revenue)*100)
+```
+
+```{r}
+# Percent revenue from fines by county
+
+varevfines %>%
+  group_by(county) %>%
+  ggplot(aes(x = reorder(county, -pct_rev_from_fines), y = pct_rev_from_fines)) +
+  geom_col() +
+  labs(title = "Counties by Percent Revenue Generated Through Fines", subtitle = "2017 by FIPS Code",
+       x = "County", y = "", color = "% Revenue from Fines")+
+  theme(axis.text.x = element_text(angle = 60),
+  axis.text = element_text(size=5))
+```
+Most counties generate between about one and four percent of their revenue from fines and forfeitures. A significant outlier (Emporia City) collects about 12 percent of its revenue from fines. 
+
+# VA Population Data
+
+Source: [Weldon Cooper Center for Public Service](https://demographics.coopercenter.org/virginia-population-estimates)
+
+```{r}
+VApop <- read_excel("/cloud/project/data/PopulationEstimates_July2021_VA_CooperCenter_formatted_1.xlsx")
+
+vapoprevfines <- merge(varevfines, VApop, by="county")
+```
+
+```{r}
+# Fine revenue per capita
+
+vapoprevfines$population <- as.numeric(vapoprevfines$population)
+
+vapoprevfines <- vapoprevfines %>% 
+  mutate(amt_dollars=amount*1000)
+
+vapoprevfines <- vapoprevfines%>% 
+mutate(fine_rev_percap=amt_dollars/population)
+```
+
+```{r}
+# Population by County (in thousands)
+
+va_counties <- counties(state = 51, cb = TRUE)
+va_counties <- va_counties %>%
+  left_join(vapoprevfines, by = c("COUNTYFP" = "county"))
+map_data2 <- va_counties %>%
+  select(COUNTYFP, NAME, NAMELSAD, population, pct_rev_from_fines, fine_rev_percap, GEOID, geometry) %>%
+  mutate(pop_thous=population/1000)
+  ggplot(data = map_data2) +
+    geom_sf(aes(fill = pop_thous)) +
+    scale_fill_carto_c(palette = "Sunset") +
+    theme_void() +
+    theme(legend.position = "bottom")
+```
+
+Maximum: Fairfax County (1,150,309)  
+Minimum: Highland County (2,232)
+
+```{r}
+# Percent Revenue from Fines by County
+
+va_counties <- counties(state = 51, cb = TRUE)
+
+va_counties <- va_counties %>% 
+  left_join(vapoprevfines, by = c("COUNTYFP" = "county"))
+
+map_data1 <- va_counties %>%
+  select(COUNTYFP, NAME, NAMELSAD, pct_rev_from_fines, fine_rev_percap, GEOID, geometry)
+
+  ggplot(data = map_data1) + 
+    geom_sf(aes(fill = pct_rev_from_fines)) +
+    scale_fill_carto_c(palette = "Emerald") +
+    theme_void() +
+    theme(legend.position = "bottom")
+```
+
+Statewide, there is not much variation in this map due to the extreme outlier. 
+
+Maximum: Emporia City (12.0%)
+Minimum: Covington City (0.018%)
+
+Emporia City (between U.S. 58 and I-95) generates about 12 perent of it revenue from fines, while all others were less than 4 percent. [Emporia is widely known as the major speed trap of Virginia.](https://www.pilotonline.com/life/article_8ad9a020-78db-11e9-ba5d-732217f80060.html)
+
+#### Percent Revenue from Fines by County (excluding outlier)
+```{r}
+va_counties <- counties(state = 51, cb = TRUE)
+va_counties <- va_counties %>%
+  left_join(vapoprevfines, by = c("COUNTYFP" = "county"))
+map_data3 <- va_counties %>%
+  select(COUNTYFP, NAME, NAMELSAD, pct_rev_from_fines, fine_rev_percap, GEOID, geometry) %>%
+  filter(NAME != "Emporia")
+  ggplot(data = map_data3) +
+    geom_sf(aes(fill = pct_rev_from_fines)) +
+    scale_fill_carto_c(palette = "Emerald") +
+    theme_void() +
+    theme(legend.position = "bottom")
+```
+When we remove the outlier, we see much more variation across the state. 
+
+Maximum without outlier: Brunswick County (3.93%)  
+Minimum: Covington City (0.018%)
+
+#### Fine Revenue per Capita by County
+```{r}
+ggplot(data = map_data1) + 
+    geom_sf(aes(fill = fine_rev_percap)) +
+    scale_fill_carto_c(palette = "Purp") +
+    theme_void() +
+    theme(legend.position = "bottom")
+```
+
+Again, there is little variation because the outlier is so extreme. 
+
+Maximum: Emporia City ($482.31 per resident)  
+Minimum: Craig County ($0.40 per resident)
+
+#### Fine Revenue per Capita by County (excluding outlier)
+```{r}
+ggplot(data = map_data3) +
+    geom_sf(aes(fill = fine_rev_percap)) +
+    scale_fill_carto_c(palette = "Purp") +
+    theme_void() +
+    theme(legend.position = "bottom")
+```
+
+We again see more variation when the outlier is removed from the map.
+
+Maximum without outlier: Greensville County, which surrounds Emporia City ($156.62)  
+Minimum Craig County ($0.41)
+
+# Data Analysis
+
+```{r}
+# Generate average fine variable
+
+mean_fine <- general %>%
+  filter(str_detect(code_section, "46.2", negate = FALSE)) %>%
+  filter(fine > 0) %>%
+  group_by(fips3) %>%
+  summarize(mean_fine = mean(fine))
+
+# Generate number of fines per person variable 
+
+total_num_fine <- general %>%
+  filter(str_detect(code_section, "46.2", negate = FALSE)) %>%
+  filter(fine > 0) %>%
+  group_by(fips3) %>%
+  summarize(total_num_fine = n())
+
+# Combine dataframes
+
+vapoprevfines <- vapoprevfines %>%
+  left_join(mean_fine, by = c("county" = "fips3"))
+
+vapoprevfines <- vapoprevfines %>%
+  left_join(total_num_fine, by = c("county" = "fips3"))
+
+# Generate variable for number of fines per capita
+
+vapoprevfines <- vapoprevfines %>%
+  mutate(num_fines_per_cap = total_num_fine / population)
+
+```
+
+#### Scatterplot of percent revenue from fines vs. fine revenue per capita
+
+```{r}
+ggplot(data = vapoprevfines, aes(x = pct_rev_from_fines, y = fine_rev_percap)) +
+        geom_point() +
+        geom_smooth(method = "lm", se = FALSE)
+```
+
+Taking out the outlier should provide a clearer picture. 
+
+#### Scatterplot of percent revenue from fines vs. fine revenue per capita (excluding outlier)
+
+```{r}
+vapoprevfines_noEmp <- vapoprevfines %>%
+  filter(locality != "Emporia")
+  
+ggplot(data = vapoprevfines_noEmp, aes(x = pct_rev_from_fines, y = fine_rev_percap)) +
+        geom_point() +
+        geom_smooth(method = "lm", se = FALSE)
+```
+
+Looks relatively clear that greater shares of revenue coming from fines are associated with greater fine revenue per capita. 
+
+#### Linear regression of percent revenue from fines on fine revenue per capita (per capita), controlling for population
+
+```{r}
+reg1 = lm(fine_revenue~ pct_rev_from_fines + population, data = vapoprevfines)
+summary(reg1)
+
+reg2 = lm(fine_rev_percap~ pct_rev_from_fines + population, data = vapoprevfines)
+summary(reg2)
+```
+
+Results suggest that the percent revenue from fines variable is positively associated with both total fine revenue and fine revenue per person. 
+
+#### Scatterplot of percent revenue from fines vs. average fine dollar amount
+```{r}
+ggplot(data = vapoprevfines, aes(x = pct_rev_from_fines, y = mean_fine)) +
+        geom_point() +
+        geom_smooth(method = "lm", se = FALSE)
+```
+
+Again, it is difficult to interpret because of the outlier. 
+
+#### Scatterplot of percent revenue from fines vs. average fine dollar amount (excluding outlier)
+```{r}
+ggplot(data = vapoprevfines_noEmp, aes(x = pct_rev_from_fines, y = mean_fine)) +
+        geom_point() +
+        geom_smooth(method = "lm", se = FALSE)
+```
+
+This plot shows a positive relationship between the percent of revenue from fines and the average fine amount. 
+
+#### Linear regression of percent revenue from fines on average fine, controlling for population
+```{r}
+reg3 = lm(mean_fine ~ pct_rev_from_fines + population, data = vapoprevfines)
+summary(reg3)
+```
+
+A 1% increase in the percent of revenue from fines is associated with an increase in the average fine amount of about $4.70. 
+
+#### Scatterplot of percent revenue from fines vs. number of fines assessed per person
+```{r}
+ggplot(data = vapoprevfines, aes(x = pct_rev_from_fines, y = num_fines_per_cap)) +
+        geom_point() +
+        geom_smooth(method = "lm", se = FALSE)
+```
+
+Again, the plot is distorted by the presence of an outlier.
+
+#### Scatterplot of percent revenue from fines vs. number of fines assessed per person (excluding outlier)
+```{r}
+ggplot(data = vapoprevfines_noEmp, aes(x = pct_rev_from_fines, y = num_fines_per_cap)) +
+        geom_point() +
+        geom_smooth(method = "lm", se = FALSE)
+```
+
+Percent of revenue from fines is positively associated with the number of fines per capita. 
+
+#### Linear regression of percent revenue from fines on number of fines assessed per person, controlling for population
+```{r}
+reg4 = lm(num_fines_per_cap ~ pct_rev_from_fines + population, data = vapoprevfines)
+summary(reg4)
+```
+
+A 1% increase in the percent of revenue from fines is associated with 0.15 additional fines per person. 
+
+# 2017 VDOT Traffic Data 
+
+Source: [VDOT](https://virginiadot.org/info/2017_traffic_data_daily_vehicle_miles_traveled.asp)
+```{r}
+VAtraffic <- read_excel("/cloud/project/data/VA_traffic_data.xlsx")
+
+vapoprevfines_traf <- merge(vapoprevfines, VAtraffic, by="county")
+```
+
+#### Regressions controlling for population and traffic data (daily vehicle miles traveled)
+```{r}
+reg5 = lm(fine_revenue~ pct_rev_from_fines, data = vapoprevfines_traf)
+
+reg6 = lm(fine_revenue~ pct_rev_from_fines + DVMT, data = vapoprevfines_traf)
+
+reg7 = lm(fine_revenue~ pct_rev_from_fines + DVMT_interstate, data = vapoprevfines_traf)
+
+reg8 = lm(fine_revenue~ pct_rev_from_fines + population, data = vapoprevfines_traf)
+
+reg9 = lm(fine_revenue~ pct_rev_from_fines + DVMT_interstate + population, data = vapoprevfines_traf)
+
+msummary(list(reg5, reg6, reg7, reg8, reg9), title = "Share of Revenue from Fines and Fine Revenue")
+```
+
+These results show that controlling for daily vehicle miles on traveled either in total or specifically on interstate roadways does not have a significant effect on the results. Controlling for population, however, increases both the estimate of interest and the precision. 
+
+```{r}
+reg10 = lm(mean_fine~ pct_rev_from_fines, data = vapoprevfines_traf)
+
+reg11 = lm(mean_fine~ pct_rev_from_fines + DVMT, data = vapoprevfines_traf)
+
+reg12 = lm(mean_fine~ pct_rev_from_fines + DVMT_interstate, data = vapoprevfines_traf)
+
+reg13 = lm(mean_fine~ pct_rev_from_fines + population, data = vapoprevfines_traf)
+
+reg14 = lm(mean_fine~ pct_rev_from_fines + DVMT_interstate + population, data = vapoprevfines_traf)
+
+msummary(list(reg10, reg11, reg12, reg13, reg14), title = "Share of Revenue from Fines and Average Fine Amount")
+```
+
+These results show that percent revenue from fines has a positive relationship with the average fine amount. Controlling for daily vehicle miles traveled, daily interstate vehicle miles traveled, or population by county has no impact on the estimates. 
+
+#Conclusion
+While the Census of Governments data is likely the most complete in terms of a repository of local revenues and expenditures, the [survey documentation](https://www2.census.gov/programs-surveys/gov-finances/technical-documentation/methodology/2017/2017_cog_local_response_rates.docx) lists an 82.7% response rate for revenue among Virginia localities, and a 75% response rate overall for Virginia. As compared to some of the research that [uses data from a similar time frame](https://www.governing.com/archive/fine-fee-revenues-special-report.html), our percentages of fines and forfeitures as a share of total revenues are significantly smaller. For instance, computations here using CoG data from 2017 list U30 (fines and forfeitures) revenue from Greensville County as 3.4%, whereas according to the [2017 budget documentation](https://cms7files.revize.com/greensvilleva/Documents%20Center/Departments/Administrative%20Building/Finance/Budget/FY2017_County_Budget_6-30-2016_Revenues.pdf) that share may actually be over 8%. Similarly, following the CoG data Brunswick County's share of U30 revenue is just under 4%, whereas following the county's own [budget](https://p1cdn4static.civiclive.com/UserFiles/Servers/Server_10858796/File/Government/Departments/Finance/FY17_Financial_Report.pdf), that share may actually be over 5%.
+
+This may be due to a few factors:
+
+-Incomplete response rate among VA localities, as mentioned
+
+-Classification of U30-associated fines, fees, and forfeitures in other budget categories--which would cause them to be excluded from U30 revenues in the CoG data--as well as inconsistent categorization across localities. For instance, the Orange County, VA [2017 budget](https://orangecountyva.gov/ArchiveCenter/ViewFile/Item/1759) lists "Charges for traffic violation processing fees" separately from the fines and forfeitures revenue, which means this additional $135,000 in charges was likely not included in the listed U30 CoG revenue data for Orange County.
+
+While these discrepancies seem minor, how and why these discrepancies come to be is a microcosm of the larger lack of reflexive analysis into locality administration and policy. In light of the growing body of research (especially the study by Goldstein, et. al.) on local administration, policing, and inequitable outcomes for minoritized individuals, the lack of transparency has considerable implications for citizens of Virginia's localities. With more time, we would dive further into revenues to develop a more comprehensive picture of locality revenues, as well as begin to understand differences among those counties with low and high rates of fine revenues as a share of total revenue.
+
+We also would like to acknowledge that while the millions of observations listed in the general court data seem esoteric in aggregate, they represent glimpses of individuals' journey through the court system in weeks, months, years, dollars, dispositions, and zip codes, just to name a few. Some cases listed here have been ongoing since 2009, others involve traumatic events, and are all wrapped up in lives much larger and significantly more meaningful than the integers and characters here. While this project scratches the surface of the issues of inequity we addressed briefly, the goal of our analysis was to use this data in a way that works towards reducing the amount of court data in the future, that offers a foundation for interrogating policies that promote inequity and injustice, either unconsciously or intentionally. We recognize that through our learning we've been beneficiaries of this data, and hope that in turn we can offer work that goes towards generating benefit for others, as well. 
+
+
+
+  
+
+
+

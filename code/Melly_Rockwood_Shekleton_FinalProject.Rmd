@@ -1,0 +1,948 @@
+---
+title: "Analyzing Vehicular Court Case Data in Central Virginia"
+author: "Erin, Will, Caitlin"
+subtitle: Speeding and DUI Cases, 2010 to 2020
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_float: yes
+    code_folding: hide
+    theme: readable
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message= FALSE, warning=FALSE)
+```
+
+
+# About Our Project
+
+Democratization of data is an important issue in the 21st century, especially given the mismatched relationship between the rapidly-evolving world of data science and the slow-paced implementation of ethical standards in big data. 
+
+Therefore, our hope is that this project will provide an accessible, low-barrier analysis of Virginia criminal court data in the interest of the public good. The focus of our project is to conduct an exploratory deep-dive into the data involving vehicular-related cases in central Virginia. We captured data on two court systems - the **General District Court** and the **Circuit Court (Criminal)**.
+
+Special shoutout to Ben Schoenfeld for his work in aggregating the court case information that we pulled from Virginia's Circuit and General District courts, available for bulk download on [virginiacourtdata.org](https://virginiacourtdata.org/). 
+
+## About the General District Court 
+
+Serving the Commonwealth through 32 judicial districts, the general district court is a limited jurisdiction trial court that hears civil cases involving amounts in controversy up to $25,000, and conducts trials for traffic infractions and misdemeanor offenses. For more information on the general district court, refer to the [VA General District Court Manual](https://www.vacourts.gov/courts/gd/resources/manuals/gdman/gd_manual.pdf).
+
+## About the Circuit Court (Criminal)
+Serving the Commonwealth through 31 judicial circuits, the circuit court is the general jurisdiction trial court with authority to try all types of civil and criminal cases. For more information on the circuit court data, refer to the [VA Circuit Court Clerk’s Manual-Criminal](https://www.vacourts.gov/courts/circuit/resources/manuals/cc_manual_criminal/toc.pdf).
+
+## Definitions of Key Data Variables
+
+Enough of confusing legal terminologies! Here are definitions of key data variables pertaining to our project. Please notice that there are slight variations in the naming and presence of variables between both of the datasets.
+
+* `fips`: Stands for "Federal Information Processing Standards" (fips) codes system. All counties in all 50 US states have an assigned numeric fips code, helpful for standardising locations and assuring smooth data exchanges across technical communities, contractors, and government agencies. 
+* `Gender`(General District) & `Sex`(Circuit Court): Includes the binary levels of `Male` and `Female` - and a very small number of `Other/Unknown` in the general district court.  
+* `Race`: Includes the minimum categories of `White`, `Black or African American`, `American Indian or Alaska Native`, `Asian`, `Native Hawaiian or Other Pacific Islander`, and `Other/Unknown`. It's unclear from the data if Race is self-reported or identified by the officer at the time of incident.
+* `Address`: Registered address of the individual.
+* `Charge`: Written description of the charge as recorded by the officer.
+* `Case Type`(General District) & `Charge Type`(Circuit): Includes classification levels (from most serious to least serious) of `Felony`,`Infraction` and `Misdemeanor`. 
+* `Code Section`: A section of the Code and the regulations and guidance issued thereunder
+* `Code`: Collection of written laws, typically on a specific subject
+* `Subcode`: Laws within a code
+* `Concluded By`(Circuit only): How the criminal case is decided
+* `Final Disposition`(General District) & `Disposition Code`(Circuit): 
+* `Sentence Time`: Amount of time in days that an individual is sentenced to spend in the criminal system (jail/penitentiary)
+* `Sentence Suspended Time` (General District) & `Sentence Suspended` (Circuit): Actual amount of time in days that an individual served in the criminal system (jail/penitentiary)
+* `Operator License Suspension Time`: Amount of time in days that an individual's driver license is suspended
+* `Fine` (General District) & `Fine Amount`(Circuit): Amount of money in $USD that an individual is sentenced to pay
+* `Costs`: Associated court costs of the fine
+
+
+# Data Selection and Project Scope
+Here we load the libraries and data necessary for our project. Our data consists of all vehicular-related cases from 2010 to 2020 in both the general district and circuit courts of the central Virginia area (Charlottesville and surrounding areas). The data is cleaned and wrangled per the methodology outlined in the code found [*here*](team_update_2.rmd). 
+
+Vehicular-related cases are found in two main sections of the Virginia Code:
+
+* Title 18.2: "Crimes and Offenses Generally" 
+
+* Title 46.2: "Motor Vehicles" 
+
+## Brief Overview of Data Cleaning & Wrangling
+
+Given the large size of the general district and circuit court datasets, we decide to approach data exploration from the lens of a specific geography within Virginia. This helps us to hone-in on a smaller subset of data vs. a broad, sweeping overview of the entire state. Since we are all currently students at the University of Virginia (go hoos! #wahoowa), this informs our selection of Central Virginia as a geographic lens by which to filter the data. 
+
+Using [Virginia's Regions](https://demographics.coopercenter.org/sites/demographics/files/RegionalProfiles_28July2014_0.pdf) from The Demographics Research Group at University of Virginia, we identify 15 localities in Central VA. Then from the [Fips Factsheet](https://www.dss.virginia.gov/files/division/cc/provider_training_development/intro_page/guidance_procedures/financial/fips.pdf), we match the 15 fips codes with corresponding locality names.
+
+Here is a comprehensive list of the Central VA fips codes/locality names. Please note that from this point forward, all of the fips codes are recoded to locality names in our project. This will hopefully improve the accessibility of this data by putting a recognizable name to the lesser-known fips codes.
+
+* 019 = Bedford 
+
+* 031 = Campbell 
+
+* 680 = Lynchburg 
+
+* 011 = Appomattox
+
+* 009 = Amherst 
+
+* 125 = Nelson 
+
+* 540 = Charlottesville 
+
+* 003 = Albemarle 
+
+* 065 = Fluvanna 
+
+* 109 = Louisa 
+
+* 079 = Greene 
+
+* 137 = Orange 
+
+* 113 = Madison 
+
+* 047 = Culpeper 
+
+* 157 = Rappahannock 
+
+
+## Our Strategy for Data Exploration
+
+First, we analyzed the circuit and general court data. We then looked at three analyses for both circuit court and district court cases:
+
+* Summary Statistics: The average fine, cost and sentence time, as well as the share of cases that have a fine, cost, or sentence time. 
+
+* Trend over Time: share of circuit court cases with a sentence; share of district court cases with a fine
+
+* How cases are concluded (disposition code)
+
+As expected, the district court data have very few cases with sentences, and a majority with fines, whereas the circuit court data has a large share of cases with sentence time, and this sentence time is significant.
+
+Finally, we also identified a subset of interest (drivers with out-of-state residences) and then ran a spatial analyses with the creation of maps.
+``` {r, message = FALSE}
+# Load libraries
+library(tidyverse)
+library(scales)
+library(dplyr)
+library(epiDisplay)
+library(ggplot2)
+library(readr)
+library(stringr)
+library(forcats)
+library(janitor)
+library(RColorBrewer)
+library(viridis)
+library(ggthemes)
+library(rcartocolor)
+library(ghibli)
+library(lubridate)
+library(kableExtra)
+library(DT)
+library(reactable)
+library(reactablefmtr)
+library(sf)
+library(tigris)
+library(plotly)
+# Full Data -- selected per methodology outlined in Team Update 2 
+# cc <- readRDS("cc2010_2020.RDS")
+# gd <- readRDS("gd2010_2020.RDS")
+cc <- readRDS("~/Desktop/Batten School/Spring 2022/Data Ethics/Group Project/rstudio-export/cc2010_2020.RDS")
+gd <- readRDS("~/Desktop/Batten School/Spring 2022/Data Ethics/Group Project/rstudio-export/gd2010_2020.RDS")
+```
+
+## Identifying the Most Common Types of Cases
+The most common case type in the general court data are speeding-related infractions, which are largely classified under code subsection 870, though several other code sections pertain to speeding as well (this is detailed in the following section). In the district court data, the most common cases are DUI offenses, which are represented by code subsection 266.
+
+### Circuit Court Data
+```{r}
+cc2 <- cc %>% 
+  filter(str_detect(subcode, "266|301|862|870|894|357|852|817|272|268"))
+cc2<- cc2 %>% 
+  mutate(subcode_cleaned = fct_collapse(subcode,
+                             "266" = c("266", "266.1"),
+                             "272" = c("272", "272A", "272(A)", "272C", "272B", "272(A)(III"),
+                             "268" = c("268.3", "268.4", "","268.2"),
+                             "852" = c("852"),
+                             "817" = c("817", "817B", "817(B)", "817A", "817(A)","817 B"),
+                             "301" = c("301", "301.1E"),
+                             "862" = c("862", "862(I)"),
+                             "894" = c("894"),
+                             "357" = c("357","357(B,3)"),
+                             "870" = c("870")))
+#interactive data vis for most 10 frequent in circuit court
+cc2_fig <- plot_ly(cc2, x = ~subcode_cleaned) %>% 
+  add_histogram()
+cc2_fig <- cc2_fig %>% 
+  layout(title = "The Top 10 Most Common Subcodes in the Circuit Court",
+         xaxis = list(title = "Subcode Section", categoryorder = "total descending",
+         yaxis = list(title = "Number of Cases")))
+cc2_fig
+
+```
+
+### District Court Data
+```{r}
+gd2 <- gd %>% 
+  filter(str_detect(subcode, "870|1158|878|646|301|874|830|1094|875|862"))
+gd2 <- gd2 %>% 
+  mutate(subcode_cleaned = fct_collapse(subcode,
+                             "870" = c("870"),
+                             "1158" = c("1158"),
+                             "878" = c("878", "878.1", "878.2"),
+                             "646" = c("646"),
+                             "301" = c("301", "301.1E", "301.1", "301(E)"),
+                             "874" = c("874"),
+                             "830" = c("830", "830.1"),
+                             "1094" = c("1094"),
+                             "875" = c("875"),
+                             "862" = c("862", "862.1", "862(II)", "862(I)")))
+
+#interactive data vis for most 10 frequent in general district court 
+gd2_fig <- plot_ly(gd2, x = ~subcode_cleaned, color = "orange") %>% 
+  add_histogram()
+gd2_fig <- gd2_fig %>% 
+  layout(title = "The Top 10 Most Common Subcodes in the General District Court",
+         xaxis = list(title = "Subcode Section", categoryorder = "total descending",
+         yaxis = list(title = "Number of Cases")))
+gd2_fig
+```
+
+## Understanding the Top 10 Most Frequent Cases
+From this, we have identified the most frequent cases in both the circuit court and general district court. Below are two tables that show the top 10 most frequent cases, ordered from greatest to least frequent. 
+
+### Code Dictionary for Circuit Court
+Among the top 10 most common subcodes, 7 are listed under code 46.2, making this the majority. The other three are listed under code 18.2. The most frequent case is 18.2-266, which is colloquially known as a DUI. 18.2-268 was difficult to define, since it includes nearly a dozen sub-subcodes.Subcode 268 seems to broadly involve tests to determine alcohol and drug blood contents, but also includes vague terms like "Fees" in 266.8 or "Substantial compliance" in 268.11. Check it out further:
+
+* **§ 18.2-268** Repealed
+* **§ 18.2-268.1** Chemical testing to determine alcohol or drug content of blood; definitions
+* **§ 18.2-268.2** Implied consent to post-arrest testing to determine drug or alcohol content of blood
+* **§ 18.2-268.3** Refusal of tests; penalties; procedures
+* **§ 18.2-268.4** Trial and appeal for refusal
+* **§ 18.2-268.5** Qualifications and liability of persons authorized to take blood sample; sampling procedure
+* **§ 18.2-268.6** Transmission of blood samples
+* **§ 18.2-268.7** Transmission of blood test samples; use as evidence
+* **§ 18.2-268.8** Fees
+* **§ 18.2-268.9** Assurance of breath-test validity; use of breath-test results as evidence
+* **§ 18.2-268.10** Evidence of violation of driving under the influence offenses
+* **§ 18.2-268.11** Substantial compliance
+* **§ 18.2-268.12** Ordinances
+
+```{r}
+knitr::include_graphics("circuit_court_codedictionary (1).png")
+```
+
+
+### Code Dictionary for General District Court
+In the district court data, all ten cases are listed under code 46.2. At least 4/10 of the most frequent subcodes involve a **speed limit** violation. It's interesting how some subcodes mention speed limits in general (870) and others specifically mention particular zones such as in business and residence districts (874). Three subcodes (1158, 878, and 870) have additional numbers following the subcode. This made it a bit difficult to synthesize the legal definition. For example, 46.2-878 shows...
+
+* **§ 46.2-878** Authority to change speed limits
+* **§ 46.2-878.1** Maximum speed limits in highway work zones; penalty
+* **§ 46.2-878.2** Maximum speed limits in certain residence districts of counties, cities, and towns; penalty
+* **§ 46.2-878.2:1** Maximum speed limits on certain roads
+* **§ 46.2-878.3** Prepayment of fines for violations of speed limits 
+  
+Within subcode 878, speed limits span various zones (i.e., highway, residence, certain roads) and 878.3 mentions a "prepayment of fines", calling into question whether or not we can succinctly label the definition of all these as a broader "Authority to change speed limits".
+```{r}
+knitr::include_graphics("general_district_codedictionary (1).png")
+```
+
+
+# Speeding Infractions
+By far the most frequent case type in the district court data over the ten year period from 2010 to 2020 was subsection 870. There were 226,965 total cases in the past 10 years relating to subsection 870. 
+
+Overall, five out of the ten most frequent cases involved speeding. Here are the speeding-related subsections:
+
+* 870
+* 874
+* 875
+* 862
+* 878
+
+Therefore, we aggregate the data by these types of cases to focus on the most common speeding-related infraction cases in the data. Check out the table below explore what some of the charges of these cases look like in the data.
+```{r}
+gd_speed <- gd2 %>% 
+  filter(subcode_cleaned == "870" | subcode_cleaned =="874" | subcode_cleaned == "875" | subcode_cleaned == "862" | subcode_cleaned == "878") %>%
+  mutate(race_fct = fct_collapse(Race,
+                              unknown = c("", "Unknown", "Unknown (Includes Not Applicable, Unknown)"),
+                              asian = c("Asian or Pacific Islander", "Asian Or Pacific Islander"),
+                              black = c("Black", "Black(Non-Hispanic)", "Black (Non-Hispanic)"),
+                              white = c("White", "White Caucasian(Non-Hispanic)", "White Caucasian (Non-Hispanic)"),
+                              latinx = "Hispanic",
+                              remaining = c("Other(Includes Not Applicable, Unknown)", "American Indian", "American Indian Or Alaskan Native", "Other (Includes Not Applicable, Unknown)", "American Indian or Alaskan Native"))) %>% 
+  mutate(fips_fct = factor(fips)) %>% 
+  mutate(year = year(FiledDate)) %>% 
+  mutate(year = factor(year)) %>% 
+  mutate(Gender = factor(Gender))
+
+# Interactive Table of Subcodes
+code_tab <- gd_speed %>% 
+  group_by(subcode, Charge) %>% 
+  summarize(cases = n()) 
+
+datatable(code_tab,
+            colnames = c("Subcode Section", 
+                         "Charge Description", "Number of Cases"),
+            caption = "The Most Common Speeding Infractions")
+```
+
+
+
+Below is a graph of the total number of speeding-related cases by year. We can notice that the overall amount of cases are trending downwards, and that 2020 is an outlier year with a drastic drop in cases. 
+```{r}
+# Total Number of Cases per Year
+gd_speed %>% 
+  group_by(year) %>% 
+  summarize(num = n()) %>% 
+  ggplot(aes(x = year, y = num, group=1)) +
+  geom_line() +
+  expand_limits(y=0) +
+  labs(title = "Total Number of Cases per Year", subtitle = "General Court Speeding Infractions",
+       x = "", y = "Count")
+```
+
+```{r, message = FALSE, results = FALSE}
+# summary statistics on main outcomes
+table_fines <- gd_speed %>% 
+  group_by(race_fct) %>% 
+  dplyr::summarize(
+    num = n(),
+    num_fine = sum(!is.na(Fine)),
+    prop_fine = num_fine/num,
+    mean_fine = mean(Fine, na.rm = TRUE),
+    num_cost = sum(!is.na(Costs)),
+    prop_cost = num_cost/num,
+    mean_cost = mean(Costs, na.rm = TRUE))
+
+table_fines_by_year <- gd_speed %>% 
+  group_by(year) %>% 
+  dplyr::summarize(
+    num = n(),
+    num_fine = sum(!is.na(Fine)),
+    prop_fine = num_fine/num,
+    mean_fine = mean(Fine, na.rm = TRUE))
+
+#creating fines and costs table df, by race
+table_fines2 <- table_fines %>% 
+  mutate( prop_fine = round(prop_fine, 3)*100) %>% 
+  mutate( mean_fine = round(mean_fine, 0)) %>% 
+  mutate( prop_cost = round(prop_cost, 3)*100) %>% 
+  mutate( mean_cost = round(mean_cost, 0))
+table_fines2 = subset(table_fines2, select = -c(num_fine,num_cost))
+
+#creating past due table df
+table_pastdue <- gd_speed %>% 
+  mutate(FineCostsPastDue = factor(FineCostsPastDue)) %>% 
+  group_by(FineCostsPastDue) %>%
+  summarise(num = n()) %>% 
+  mutate(past_due = fct_collapse(FineCostsPastDue,
+                              No = c("FALSE", NA, NULL),
+                              Yes = c("TRUE")))
+table_pastdue = subset(table_pastdue, select = -c(FineCostsPastDue))
+
+# creating license suspension and sentence time tables
+table_speed_sent <- gd_speed %>% 
+  group_by(SentenceTime) %>% 
+  summarize (count = n()) %>% 
+  mutate(sentence = ifelse(is.na(SentenceTime) | SentenceTime == 0, 0, 1)) %>% 
+  group_by(sentence) %>% 
+  summarise(sentence = sum(count))
+
+table_speed_suspend <- gd_speed %>% 
+  group_by(OperatorLicenseSuspensionTime) %>% 
+  summarize (count = n()) %>% 
+  mutate(suspend = ifelse(is.na(OperatorLicenseSuspensionTime) | OperatorLicenseSuspensionTime == 0, 0, 1)) %>% 
+  group_by(suspend) %>% 
+  summarise(suspend = sum(count))
+```
+
+Over this ten year period, 2,250 of the cases  result in a licence suspension, which is only 0.57% of the data. An even smaller share result in a sentence time (0.4%). Hence, fines are the most common outcome for these infractions. About 3.56% of the cases with fines are past due. Nevertheless, while a vast majority of fines are paid on time, the implications of fine burdens are an important are for further exploration. The interactive table below highlights high-level summary statistics of fines by race.
+```{r}
+# Summary Stats on Fines and Costs, by Race
+reactable(table_fines2,
+          columns = list(
+            race_fct = colDef(name = "Race"),
+            num = colDef(name = "# Cases"),
+            mean_fine = colDef(name = "Average Fine",
+                                cell = data_bars(table_fines2,
+                                                 fill_color = viridis(3))),
+            prop_fine = colDef(name = "% w/ Fine"),
+            mean_cost = colDef(name = "Average Cost",
+                                        cell = data_bars(table_fines2,
+                                                         fill_color = viridis(3))),
+            prop_cost = colDef(name = "% w/ Cost")),
+          columnGroups = list(
+            colGroup(name = " ", columns = c("race_fct", "num")),
+            colGroup(name = "Fines", columns = c("mean_fine", "prop_fine")),
+            colGroup(name = "Costs", columns = c("mean_cost", "prop_cost"))
+          ))
+```
+
+Below we explore data visualizations regarding fines for speeding-related cases in the general court. First, we see that a vast majority of cases of the years result in a fine, though there was a slight decline by a few percentage points from 2010 to 2019. The year 2020 is an outlier, in which there is a drop by about 5 percentage points in the share of cases that end in a fine as compared with 2019.
+```{r}
+# Share of cases with fines by year
+gd_speed %>% 
+  group_by(year) %>% 
+  dplyr::summarize(
+    num = n(),
+    num_fine = sum(!is.na(Fine)),
+    prop_fine = num_fine/num,
+    mean_fine = mean(Fine, na.rm = TRUE)) %>% 
+  ggplot(aes(x = year, y = prop_fine, group=1)) +
+  geom_line() +
+    labs(title = "Share of Cases with a Fine (By Year)", subtitle = "General Court Speeding Infractions",
+         x = "Year", y = "Proportion")
+```
+
+The average fine in 2010 is about $89. Over the next decade, fines increase slightly. The average fine in 2020 is about $113. It is expected that fines increase over the years with inflation, and there is no clear jump in average fine for a given year.
+```{r}
+# Average fine by year
+gd_speed %>% 
+  group_by(year) %>% 
+  dplyr::summarize(mean_fine = mean(Fine, na.rm = TRUE)) %>% 
+  ggplot(aes(x = year, y = mean_fine)) +
+  geom_col(fill = "light blue", color = "dark blue") +
+  labs(title = "Average Fine by Year", subtitle = "The average fine for general court\n speeding infractions increase steadily",
+       y = "Average Fine", x = "Year")
+```
+
+Next, we the case resolutions for speeding-related cases in the general court data. We see that, overwhelming, fines are prepaid (over 58% of cases). The second most common case resolutions are Guilty and Guilty in Absentia, which together account for 38% of case resolutions. Only 2.34% of cases result in fine dismissal. 
+```{r}
+#this code helps determine the percentages cited in the text above
+#gd_speed %>% 
+#  summarise(count = n())
+#gd_speed %>% 
+#  group_by(FinalDisposition) %>% 
+#  summarise(count = n())
+
+# Case Resolution
+gd_speed %>% 
+  ggplot(aes(x = fct_infreq(FinalDisposition))) +
+  geom_bar(fill = "navy") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(title = "Case Conclusions", subtitle = "General Court Speeding Infractions",
+       x = "", y = "Count")
+```
+
+The next plot presents these count of the four most common types of case resolutions (which account for over 98% of resolutions), over the study time period. Over time, the number of cases is decreasing, however the breakdown of cases by conclusion remains relatively constant. Also, it is important to note that analyzing case conclusion by race and gender does not reveal any immediate stark disparities, though further investigation in this area could provide additional information and insight.
+```{r}
+gd_speed %>% 
+  filter(FinalDisposition == "Prepaid" | FinalDisposition == "Guilty" | 
+           FinalDisposition == "Guilty In Absentia" | FinalDisposition == "Dismissed") %>% 
+  group_by(year, FinalDisposition) %>% 
+  summarize(num = n()) %>% 
+  ggplot(aes(x = year, y = num, fill = FinalDisposition)) +
+  geom_col() +
+  scale_fill_ghibli_d(name = "PonyoLight") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(title = "Case Conclusions", subtitle = "General Court Speeding Infractions",
+       x = "", y = "Count")
+```
+
+
+# DUI Cases
+
+```{r, Data Wrangling}
+#Filtering for DUIs only
+cc_dui <- cc %>% 
+  filter(subcode == "266")
+
+#Recoding race 
+cc_dui <- cc_dui %>% 
+  mutate(race_fct = fct_collapse(Race,
+                              unknown = c("", "Unknown", "Unknown (Includes Not Applicable, Unknown)"),
+                              asian = c("Asian or Pacific Islander", "Asian Or Pacific Islander"),
+                              black = c("Black", "Black(Non-Hispanic)", "Black (Non-Hispanic)"),
+                              white = c("White", "White Caucasian(Non-Hispanic)", "White Caucasian (Non-Hispanic)"),
+                              latinx = "Hispanic",
+                              remaining = c("Other(Includes Not Applicable, Unknown)", "American Indian", "American Indian Or Alaskan Native", "Other (Includes Not Applicable, Unknown)", "American Indian or Alaskan Native")))
+
+#Adding File Year
+cc_dui <- cc_dui %>% 
+  mutate(file_year = format(as.Date(cc_dui$Filed, format="%d/%m/%Y"),"%Y"))
+```
+
+Here are some data visualizations regarding the number of DUI cases in the circuit court. 
+```{r, Section A: Total Cases}
+#Over Time
+cc_dui %>% 
+  group_by(file_year) %>% 
+  summarize(num_cases = n()) %>% 
+  ggplot(aes(file_year, y = num_cases)) +
+  geom_col(fill = "light blue", color = "dark blue") +
+  labs(x = "Year", y = "Number of Cases", title = "Total DUI Cases in Local Circuit Court, Filed by Year, 2010-2020") +
+  theme(legend.position = "bottom")
+
+
+cc_dui_locality <- cc_dui %>% 
+  mutate(fips3 = factor(fips)) %>% 
+  count(fips3)
+
+#Numbers to the top, colors...
+cc_dui_locality %>% 
+  ggplot(aes(x = fips3, y = n)) +
+  geom_col(fill = "light blue", color = "dark blue") +
+  scale_x_discrete(labels = c("3"="Ablemarle",
+                              "9"="Amherst",
+                              "11"="Appomattox",
+                              "31"="Campbell",
+                              "47"="Culpepper",
+                              "65"="Fluvanna",
+                              "79"="Greene",
+                              "109"="Louisa",
+                              "113"="Madison",
+                              "125"="Nelson",
+                              "137"="Orange",
+                              "157"="Rappahannock",
+                              "540"="Charlottesville",
+                              "680"="Lynchburg")) +
+  geom_text(data = cc_dui_locality, aes(x = fips3, y = 1, label = scales::comma(n)), nudge_y = 10, size = 3) +
+  labs(x = "Locality", y = "Number of Cases", title = "Total DUI Cases Filed by Locality: 2010-2020") +
+  theme(axis.text.x = element_text(size = 10, angle = 30), legend.position = "bottom")
+```
+
+We were somewhat surprised to find a spike in 2016 - maybe this had something to do with the election— but unsurprised to see a drop into 2020 as fewer people were out driving, let alone driving drunk, during the pandemic. As for locality, Ablemarle the largest county and its population is clustered around Route 29, while Campbell County and the city of Lynchburg are adjacent, so their high numbers are unsurprising, though we could not find a reason for them compared to the other areas. 
+
+Here are some data visualizations regarding the number of DUI cases in the circuit court. 
+```{r, Section B: Cases by Race}
+cc_dui %>% 
+  group_by(race_fct) %>% 
+  summarize(num_cases = n()) %>% 
+  ggplot(aes(x = race_fct, y = num_cases, fill = race_fct)) +
+  geom_col() +
+  scale_x_discrete(labels = c("remaining"="Remaining",
+                              "aisan"="Asian",
+                              "black"="Black",
+                              "latinx"="Latinx",
+                              "unknown"="Unknown",
+                              "white"="White",
+                              "NA"="NA")) +
+  scale_fill_ghibli_d(name = "PonyoLight") +
+  labs(x = "Race", y = "Number of Cases", title = "Total DUIs by Race in Local Circuit Court: 2010-2020") +
+  theme(legend.position = "bottom")
+
+#Over Time
+cc_dui %>% 
+  group_by(file_year, race_fct) %>% 
+  mutate(num_cases = n()) %>% 
+  summarize(num_fines = n(),
+            num_cases = first(num_cases)) %>%  
+  ggplot(aes(x = file_year, y = num_cases, color = race_fct)) +
+  geom_line() +
+  geom_point(aes(size = num_cases))+
+  labs(x = "", y = "Number", title = "Total DUIs by Year and Race: 2010-2020") +
+  theme(legend.position = "bottom")
+```
+
+This is a table demonstrating outcome percentage by race. 
+```{r, Outcome percentage by Race}
+#First a table with real numbers
+cc_dui_table <- cc_dui %>% 
+  tabyl(race_fct, ConcludedBy) %>% 
+  adorn_percentages("row") 
+
+cc_dui_table <- format(cc_dui_table, trim = FALSE, digits = 2)
+
+reactable(cc_dui_table)
+```
+
+```{r, Section C: Outcomes by Race Graph, include=FALSE}
+
+#And now a fancy Chart because who doesn't love a fancy chart
+count_race <- cc_dui %>% 
+  group_by(race_fct) %>% 
+  summarize(numcases = n()) %>% 
+  mutate(y = 1)
+
+ggplot(cc_dui, aes(x = fct_relevel(fct_infreq(race_fct), "unknown", after = Inf))) +
+  geom_bar(aes(fill = ConcludedBy), position = "fill") +
+  scale_x_discrete(labels = c("unknown"="Race\n Unknown", 
+                              "amind"="American\n Indian",
+                              "asian"="Asian\n American", 
+                              "black"="Black",
+                              "latinx"="Hispanic", 
+                              "white"="White",
+                              "remaining"="Remaining")) +
+  scale_fill_ghibli_d(name = "PonyoLight") +
+  geom_text(data = count_race, aes(x = race_fct, y = 1, label = scales::comma(numcases)),
+            nudge_y = .05, size = 3) +
+  labs(y = "Percentage", x = "Race", title = "Outcomes by Race, 2010-2020") +
+  theme_minimal() 
+```
+
+```{r, Section D: More Data Wrangling, include=FALSE}
+
+#Just those who were sentenced 
+cc_dui_punish <- cc_dui %>% 
+  filter(SentenceTime > "0" | OperatorLicenseSuspensionTime > "0")
+
+replace_na(cc_dui_punish$SentenceTime, 0)
+replace_na(cc_dui_punish$OperatorLicenseSuspensionTime, 0)
+
+```
+
+Here are bar graphs of average sentence times by charge type. Notice how the most frequent charge type flip-flops... felony charges capture the highest average sentence time, while misdemeanor charges capture the highest average operator license suspension time. This is because a DUI becomes a felony when it is the third arrest for the driver. Therefore the punishment will be more longer. 
+```{r, Section D: Sentencing}
+#Average Sentence Times by ChargeType
+cc_dui_punish %>% 
+  group_by(ChargeType) %>% 
+  summarize(AverageTime = mean(SentenceTime, na.rm = TRUE)) %>% 
+  ggplot(aes(x = ChargeType, y = AverageTime, fill = ChargeType)) +
+  geom_col()  +
+  scale_fill_manual(name = "Charge Type", 
+                     values = c("navy", "light blue")) +
+  labs(x = "Type of Charge", y = "Length of Sentence in Days", title = "Average Length of Sentence by Type of Charge") +
+  theme(legend.position = "bottom")
+
+#Average License Suspensions by Chargetype
+cc_dui_punish %>% 
+  group_by(ChargeType) %>% 
+  summarize(AverageTime = mean(OperatorLicenseSuspensionTime, na.rm = TRUE)) %>% 
+  ggplot(aes(x = ChargeType, y = AverageTime, fill = ChargeType)) +
+  geom_col()  +
+  scale_fill_manual(name = "Charge Type", 
+                     values = c("navy", "light blue")) +
+  labs(x = "Type of Charge", y = "Length of Suspension in Days", title = "Average Length of License Suspension by Type of Charge") +
+  theme(legend.position = "bottom")
+```
+
+Here are data visualizations of average sentence time by race and charge type.
+```{r}
+#Average Sentence time by race by chargetype
+
+#Felony 
+cc_dui_punish %>% 
+  filter(ChargeType == "Felony") %>% 
+  group_by(race_fct) %>% 
+  summarize(AverageTime = mean(SentenceTime, na.rm = TRUE)) %>% 
+  ggplot(aes(x = race_fct, y = AverageTime, fill = race_fct)) +
+  geom_col()  +
+  scale_fill_ghibli_d(name = "PonyoLight") +
+  labs(x = "Race", y = "Length of Sentence in Days", title = "Average Sentence by Race for Felony DUI") +
+  theme(legend.position = "bottom") 
+
+# Misdemeanor
+cc_dui_punish %>% 
+  filter(ChargeType == "Misdemeanor") %>% 
+  group_by(race_fct) %>% 
+  summarize(AverageTime = mean(SentenceTime, na.rm = TRUE)) %>% 
+  ggplot(aes(x = race_fct, y = AverageTime, fill = race_fct)) +
+  geom_col()  +
+  scale_fill_ghibli_d(name = "PonyoLight") +
+  labs(x = "Type of Charge", y = "Length of Sentence in Days", title = "Average Sentence by Race for Misdemeanor DUI") +
+  theme(legend.position = "bottom")
+```
+
+Here are data visualisations of average operator licenses suspensions time by race and charge type.
+```{r}
+#Average Operator Licenses Suspensions Time by Race by ChargeType
+
+#Felony
+cc_dui_punish %>% 
+  filter(ChargeType == "Felony") %>% 
+  group_by(race_fct) %>% 
+  summarize(AverageTime = mean(OperatorLicenseSuspensionTime, na.rm = TRUE)) %>% 
+  ggplot(aes(x = race_fct, y = AverageTime, fill = race_fct)) +
+  geom_col()  +
+  scale_fill_ghibli_d(name = "PonyoLight") +
+  labs(x = "Race", y = "Length of Suspension in Days", title = "Average Length of License Suspension for DUI Felony by race") +
+  theme(legend.position = "bottom") 
+
+#Misdemeanor
+cc_dui_punish %>% 
+  filter(ChargeType == "Misdemeanor") %>% 
+  group_by(race_fct) %>% 
+  summarize(AverageTime = mean(OperatorLicenseSuspensionTime, na.rm = TRUE)) %>% 
+  ggplot(aes(x = race_fct, y = AverageTime, fill = race_fct)) +
+  geom_col()  +
+  scale_fill_ghibli_d(name = "PonyoLight") +
+  labs(x = "Race", y = "Length of Suspensions in Days", title = "Average Length of License Suspension by Race for Misdemeanors") +
+  theme(legend.position = "bottom") 
+```
+
+The spike in average suspended sentence for a felony for Latinx is because there was only one Latinx person who had their license suspended for a DUI Felony from 2010 to 2020, and they had their license suspended for over 1500 days.
+
+
+# Cases with Out-Of-State Addresses
+
+```{r}
+#first step, need to subset in-state and OOS
+#subsetting by addresses and subcode in the general court data 
+
+#adding column that specifies in-state and OOS
+gd_in_state_and_OOS <- gd2 %>% 
+  mutate(Residence = ifelse(grepl("VA|Virginia",Address), "in-state", "OOS")) %>% 
+  mutate(year = year(FiledDate)) 
+#subset of OOS
+gd_OOS <- gd_in_state_and_OOS %>% 
+  filter(str_detect(Residence, "OOS")) 
+#subset of in-state
+gd_in_state <- gd_in_state_and_OOS %>% 
+  filter(str_detect(Residence, "in-state")) 
+```
+
+Now, for an exploration of a subset of interest: drivers who are charged with a crime in Virginia, yet have registered out-of-state (OOS) addresses. Initial data exploration shows that there aren't a significant amount of OOS addresses in the circuit court data, so this analysis only focuses on the general court data.
+
+Below is a recreation of our initial data exploration of top 10 most frequent subcodes in the general court. Except now, the data is subset to include only cases that involve drivers with OOS residences. This graph shows that the top 5 most frequent subcodes (870, 878, 862, 875, 874) are all speeding-related. This differs from the original general district court, in which speeding cases were generally distributed throughout the top 10 most frequent subcodes. Clearly, this demonstrates that OOS drivers, if faced with a driving-related charge, are most likely to get a speeding-related offense.
+
+```{r}
+#interactive data vis of top 10 cases involving OOS drivers
+gdOOS_fig <- plot_ly(gd_OOS, x = ~subcode_cleaned, color = "orange") %>% 
+  add_histogram()
+gdOOS_fig <- gdOOS_fig %>% 
+  layout(title = "Top 10 Most Common Subcodes involving OOS Drivers in the General District Court",
+         xaxis = list(title = "Subcode Section", categoryorder = "total descending",
+         yaxis = list(title = "Number of Cases")))
+gdOOS_fig
+```
+
+
+## Data Visualization Comparisons: In-State vs. Out-of-State (OOS)
+
+Here's an overview comparing cases that involve in-state and OOS residences. Here, we are exploring: are there locations in central VA that stand out for the presence (or lack thereof) of driving-related charges committed by someone who is OOS? 
+
+Established from prior data visualizations, we know that most driving-related cases in Virginia are committed by someone with a Virginia residence. However, there are a few localities in which a sizable proportion are committed by a driver with an OOS residence. Amherst, Madison, Nelson, and Rappahonock are the areas where the OOS proportion is at approximately ~0.25.
+```{r}
+#recode fips to factor
+gd_in_state_and_OOS$fips <- as.factor(gd_in_state_and_OOS$fips)
+
+#in-state vs. OOS - number cases
+gd_in_state_and_OOS %>% 
+  group_by(Residence) %>% 
+  ggplot(aes(x = fct_infreq(fips), fill = Residence)) +
+  scale_x_discrete(labels = c("3"="Ablemarle",
+                              "9"="Amherst",
+                              "11"="Appomattox",
+                              "31"="Campbell",
+                              "47"="Culpepper",
+                              "65"="Fluvanna",
+                              "79"="Greene",
+                              "109"="Louisa",
+                              "113"="Madison",
+                              "125"="Nelson",
+                              "137"="Orange",
+                              "157"="Rappahannock",
+                              "540"="Charlottesville",
+                              "680"="Lynchburg")) +
+  geom_bar() +
+  scale_fill_manual(values = c("light pink", "light yellow")) +
+  labs(title = "Breakdown of Driver Residence", subtitle = "By Number of Cases",
+       x = "Locality Name", y = "Number of Cases") +
+  theme(axis.text.x = element_text(size = 10, angle = 30))
+
+# recode fips as factor
+gd_in_state_and_OOS$fips <- as.factor(gd_in_state_and_OOS$fips)
+
+#in-state vs. OOS - proportion
+gd_in_state_and_OOS %>% 
+  group_by(Residence) %>% 
+  ggplot(aes(x = fips, fill = Residence)) +
+  scale_x_discrete(labels = c("3"="Ablemarle",
+                              "9"="Amherst",
+                              "11"="Appomattox",
+                              "31"="Campbell",
+                              "47"="Culpepper",
+                              "65"="Fluvanna",
+                              "79"="Greene",
+                              "109"="Louisa",
+                              "113"="Madison",
+                              "125"="Nelson",
+                              "137"="Orange",
+                              "157"="Rappahannock",
+                              "540"="Charlottesville",
+                              "680"="Lynchburg")) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("light pink", "light yellow")) +
+  labs(title = "Breakdown of Driver Residence", subtitle = "By Proportion",
+       x = "Locality Name", y = "Proportion") +
+  theme(axis.text.x = element_text(size = 10, angle = 30))
+```
+
+
+## Further Subsetting of OOS Residences into VA Border Regions
+
+Here's more data visualization of driving-related cases involving those with residences in VA border regions. Virginia is bordered by 5 states - Maryland, North Carolina, Tennessee, West Virginia, and Kentucky, and the territory of Washington DC. So, these following graphs are subset to only include these 5 states + Washington DC. Of note is that Maryland and North Carolina are by far the two states capturing the most amount of cases, both in number of cases and proportion.
+```{r, message = FALSE, results = FALSE}
+# create a new dataframe w/column containing the state code
+gd_VAborder <- gd_in_state_and_OOS %>% 
+  mutate(state = str_extract(Address, ",[[:blank:]][A-Z]{2}"), # find the pattern ", XX" where XX is any two uppercase letters
+         state = str_remove(state, ", ")) 
+
+#filter dataframe to only include the Virginia border states & Washington DC
+gd_VAborder <- gd_VAborder[gd_VAborder$state %in% c("KY", "MD", "WV", "NC", "DC", "TN"), is.na = TRUE ]
+
+#table(gd_VAborder$state) # check
+#table(gd_VAborder$Address) # check
+```
+
+```{r}
+# bar graph of case numbers from VA border states
+gd_VAborder %>% 
+  group_by(state) %>% 
+  ggplot(aes(x = fct_infreq(state))) +
+  geom_bar(fill = "light blue", color = "dark blue") +
+  labs(title = "Drivers with Addresses from VA Border States", subtitle = "By Case Numbers",
+       x = "States", y = "Number of Cases")  
+
+# bar graph of proportions cases that have OOS residences
+gd_VAborder %>% 
+  group_by(state) %>% 
+  ggplot(aes(x = fips, fill = state)) +
+  geom_bar(position = "fill") +
+  scale_x_discrete(labels = c("3"="Ablemarle",
+                              "9"="Amherst",
+                              "11"="Appomattox",
+                              "31"="Campbell",
+                              "47"="Culpepper",
+                              "65"="Fluvanna",
+                              "79"="Greene",
+                              "109"="Louisa",
+                              "113"="Madison",
+                              "125"="Nelson",
+                              "137"="Orange",
+                              "157"="Rappahannock",
+                              "540"="Charlottesville",
+                              "680"="Lynchburg")) +
+  scale_fill_ghibli_d(name = "MononokeLight") + 
+  labs(title = "Drivers with Addresses from VA Border States", subtitle = "By Proportion",
+       x = "Locality", y = "Proportion") +
+  theme(axis.text.x = element_text(size = 10, angle = 30))
+
+```
+
+
+## Spatial Mapping of Localities/Roads
+
+Here are some maps that overlay primary and secondary roads in central Virginia. Considering that we have been analysing vehicular cases, it is beneficial to visualise locations of important, high-volume traffic roads.
+
+Definitions:
+
+* **Primary roads** are generally divided, limited-access highways within the Federal interstate highway system or under state management. These highways are distinguished by the presence of interchanges and are accessible by ramps and may include some toll highways.
+
+* **Secondary roads** are main arteries, usually in the U.S. highway, state highway, or county highway system. These roads have one or more lanes of traffic in each direction, may or may not be divided, and usually have at-grade intersections with many other roads and driveways.
+```{r, include = FALSE}
+# Get state county and single county sf/data frames
+# county boundaries
+
+va <- counties(state = "51")
+
+central_va <- va %>% 
+  filter(COUNTYFP %in% c("019","031","680","011","009","125","540","003","065","109","079","137","113","047","157"))#add all counties here
+
+
+# Get Roads ----
+# primary and secondary roads: 
+# can filter by state only
+va_primsec_roads <- primary_secondary_roads(state = "51")
+
+```
+
+```{r}
+# using an st_intersection with the region of interest
+central_va_primsec_roads <- st_intersection(va_primsec_roads, central_va)
+
+central_va_primsec_roads <- central_va_primsec_roads %>% 
+  filter(MTFCC %in% c("S1100", "S1200")) # filtering primary and secondary roads
+
+# a map of central VA, overlaying primary and secondary roads. trying to spatialise major hubs of transit to help inform data exploration of counties with high proportion of OOS drivers
+ggplot(central_va) +
+  geom_sf() +
+  geom_sf(data = central_va_primsec_roads, 
+          color = "turquoise") +
+  labs(title = "Central VA Map", subtitle = "Overlay of Primary and Secondary Roads")
+```
+
+
+### Case Study: Rappahannock County
+
+What is the significance of location in driving-related cases? Out of the 4 counties (Amherst, Madison, Nelson, and Rappahannock) that have above ~25% proportion of drivers w/OOS residences, let's use Rappahannock County as a case study.
+
+Nested in the northenmost part of what is considered the Central Virginia region, Rappahannock has a population of 7,407 according to recent data from the [US Census Bureau](https://www.census.gov/quickfacts/fact/table/rappahannockcountyvirginia/LND110210). Interestingly, the population size of Rappahannock is very low and from the map we can see that the county only has a few major roads. This is potentially an area for further research in order to investigate why there is such a high proportion of cases involving OOS drivers. Is this county a "speed trap" in the central Virginia region? Drivers beware of fines!
+
+```{r, Mapping Rappahanock}
+# Mapping Rappahannock, a county of interest
+
+#table(rappahannock_primsec_roads$FULLNAME) # hiding this for presentation
+
+# get Rappahannock sf boundaries
+rappahannock_va <- va %>% 
+  filter(COUNTYFP == "157")
+
+# get  roads
+va_primsec_roads <- primary_secondary_roads(state = "51")
+
+rappahannock_primsec_roads <- st_intersection(va_primsec_roads, rappahannock_va)
+
+# the resulting data frame can be then filtered by road type
+
+rappahannock_primsec_roads <- rappahannock_primsec_roads %>% 
+  filter(MTFCC %in% c("S1100", "S1200")) # primary and secondary roads
+
+
+# here's the map
+ggplot(rappahannock_va) +
+  geom_sf() +
+  geom_sf(data = rappahannock_primsec_roads, 
+          color = "turquoise") +
+  labs(title = "Rappahannock VA Map", subtitle = "Overlay of Primary and Secondary Roads")
+
+# here's a bar graph of just Rappahannock county, using subset data by VA border states
+gd_VAborder %>% 
+  group_by(state) %>% 
+  filter(fips == "157") %>% 
+  ggplot(aes(x = fct_infreq(state))) +
+  geom_bar(fill = "light blue", color = "dark blue") +
+  labs(title = "Drivers with OOS Addresses in Rappahannock", subtitle = "By Case Numbers",
+       x = "States", y = "Number of Cases") 
+```
+
+
+```{r}
+# a table showing the primary and secondary roads in Central VA
+table(central_va_primsec_roads$NAME)
+
+```
+
+### Case Study: Rappahannock
+
+What is the significance of location in driving-related cases? Let's use the case study of Rappahannock, a county with one of the highest proportions of cases involving drivers with OOS residences. Nested in the northenmost part of what is considered the Central Virginia region, Rappahannock has a population of 7,407 according to recent data from the [US Census Bureau](https://www.census.gov/quickfacts/fact/table/rappahannockcountyvirginia/LND110210).
+
+The key primary and secondary roads in Rappahannock are:
+
+* Co Rd 618
+
+* Ft Valley Rd
+
+* Lee Hwy
+
+* Main St
+
+* Red Oak Mountain Rd
+
+* Remount Rd
+
+* Sperryville Pike
+
+* State Rte 231
+
+* US Hwy 211
+
+* US Hwy 522
+
+* Warren Ave
+
+* Zachary Taylor Hwy
+
+
+
+# Embedding Data Feminist Principles into Our Project
+
+Data literacy is an oft-overlooked issue. Therefore, when reporting our findings, we strove to create data visualisations in the form of charts, tables, and maps, that are both eye-catching and easily understood. Not everyone has access to classes on econometrics or statistical analysis, but everyone should know the information that we have dug up about vehicular court cases in central Virginia. Also, it is easily digestible statistics that are often the most useful for policymakers, because they are the front-line advocates for policy changes impacting all citizens. If one cannot effectively communicate data-driven findings to public policy stakeholders, then progress is hindered towards achieving a more equitable society. Data science is an innovative representation of the world through the use of numbers, and is a powerful tool when grounded in a framework of ethical values such as empathy and inclusivity. The world's social problems are uniquely human, and the strategic leveraging of data science can help us to better solve them.
+
+
+# Sources
+
+* [Virginia Court Data - courtesy of Ben Schoenfield](https://virginiacourtdata.org/)
+* [Virginia’s Court System web pages](https://www.vacourts.gov/courts/home.html)
+* [VA General District Court Manual](https://www.vacourts.gov/courts/gd/resources/manuals/gdman/gd_manual.pdf)
+* [VA Circuit Court Clerk’s Manual-Criminal](https://www.vacourts.gov/courts/circuit/resources/manuals/cc_manual_criminal/toc.pdf)
+* [What is a FIPS Code](https://www.postgrid.com/state-county-fips-codes/#heading1)
+* [Virginia's Regions from The Demographics Research Group at University of Virginia](https://demographics.coopercenter.org/sites/demographics/files/RegionalProfiles_28July2014_0.pdf) 
+* [Fips Factsheet](https://www.dss.virginia.gov/files/division/cc/provider_training_development/intro_page/guidance_procedures/financial/fips.pdf)
+* [US Census Bureau - population data for Rappahannock County](https://www.census.gov/quickfacts/fact/table/rappahannockcountyvirginia/LND110210)
